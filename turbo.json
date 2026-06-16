@@ -15,7 +15,17 @@
         "NEXT_PUBLIC_API_URL",
         "NEXTAUTH_SECRET",
         "NEXTAUTH_URL",
-        "ADMIN_EMAILS"
+        "ADMIN_EMAILS",
+        "DEV_ADMIN_EMAIL",
+        "DEV_ADMIN_PASSWORD",
+        "NEXT_PUBLIC_APP_NAME",
+        "THEME_PRIMARY",
+        "THEME_PRIMARY_DARK",
+        "THEME_PRIMARY_SOFT",
+        "THEME_PRIMARY_LIGHT",
+        "THEME_PRIMARY_EXTRA_LIGHT",
+        "THEME_SIDEBAR_BG",
+        "THEME_PAGE_BG"
       ]
     },
     "test": {
@@ -36,10 +46,21 @@
     "DATABASE_URL",
     "NEXT_PUBLIC_API_URL",
     "VERCEL_URL",
+    "VERCEL_ENV",
     "VERCEL_PROJECT_PRODUCTION_URL",
     "NEXTAUTH_SECRET",
     "NEXTAUTH_URL",
-    "ADMIN_EMAILS"
+    "ADMIN_EMAILS",
+    "DEV_ADMIN_EMAIL",
+    "DEV_ADMIN_PASSWORD",
+    "NEXT_PUBLIC_APP_NAME",
+    "THEME_PRIMARY",
+    "THEME_PRIMARY_DARK",
+    "THEME_PRIMARY_SOFT",
+    "THEME_PRIMARY_LIGHT",
+    "THEME_PRIMARY_EXTRA_LIGHT",
+    "THEME_SIDEBAR_BG",
+    "THEME_PAGE_BG"
   ],
   "ui": "stream"
 }

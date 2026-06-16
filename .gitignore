@@ -7,12 +7,17 @@ coverage
 *.log
 
 # envs
+Example Files/*
 .env
 .env.local
 .env.*.local
+.env.example
+env.example
 apps/*/.env
 apps/*/.env.local
 apps/*/.env.*.local
+apps/*/.env.example
+apps/*/env.example
 
 # turbo / vercel
 .turbo
