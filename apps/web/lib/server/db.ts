@@ -56,7 +56,7 @@ export const sql = DEV_BYPASS
   : (globalForDb.__sql ??
       postgres(process.env.DATABASE_URL!, {
         prepare: false,
-        ssl: process.env.DATABASE_URL!.includes("localhost") ? false : "require",
+        ssl: (process.env.DATABASE_URL!.includes("localhost") || process.env.DATABASE_URL!.includes("127.0.0.1")) ? false : "require",
       }));
 
 if (sql && !globalForDb.__sql) globalForDb.__sql = sql;
