@@ -1,0 +1,96 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "rules": {
+    "files": "warn",
+    "dependencies": "warn",
+    "devDependencies": "warn",
+    "unlisted": "error",
+    "binaries": "warn",
+    "unresolved": "warn",
+    "exports": "warn",
+    "types": "warn"
+  },
+  "workspaces": {
+    "apps/web": {
+      "entry": [
+        "app/**/*.{ts,tsx}",
+        "components/sidebar.tsx",
+        "components/customer-config/**/*.{ts,tsx}",
+        "graphql/**/*.ts",
+        "lib/**/*.ts",
+        "!lib/mocks/**",
+        "middleware.ts",
+        "next.config.ts",
+        "!drizzle.config.ts"
+      ],
+      "project": [
+        "**/*.{ts,tsx}",
+        "!drizzle.config.ts",
+        "!components/ui/**",
+        "!components/theme-provider.tsx",
+        "!hooks/**"
+      ],
+      "ignore": [
+        "**/*.test.{ts,tsx}",
+        "**/*.spec.{ts,tsx}",
+        ".next/**",
+        "out/**",
+        "build/**",
+        "components/ui/**",
+        "hooks/**",
+        "lib/mocks/**"
+      ],
+      "ignoreDependencies": [
+        "@radix-ui/react-accordion",
+        "@radix-ui/react-aspect-ratio",
+        "@radix-ui/react-collapsible",
+        "@radix-ui/react-context-menu",
+        "@radix-ui/react-menubar",
+        "@radix-ui/react-navigation-menu",
+        "@radix-ui/react-popover",
+        "@radix-ui/react-progress",
+        "@radix-ui/react-radio-group",
+        "@radix-ui/react-scroll-area",
+        "@radix-ui/react-separator",
+        "@radix-ui/react-slider",
+        "@radix-ui/react-toast",
+        "@radix-ui/react-toggle",
+        "@radix-ui/react-toggle-group",
+        "@radix-ui/react-tooltip",
+        "cmdk",
+        "embla-carousel-react",
+        "input-otp",
+        "next-themes",
+        "react-day-picker",
+        "react-dom",
+        "react-hook-form",
+        "react-resizable-panels",
+        "recharts",
+        "sonner",
+        "vaul",
+        "@repo/eslint-config",
+        "@repo/typescript-config",
+        "@types/react-dom",
+        "@typescript-eslint/eslint-plugin",
+        "@typescript-eslint/parser",
+        "depcheck",
+        "eslint",
+        "eslint-config-next",
+        "eslint-plugin-unused-imports",
+        "tailwindcss",
+        "tw-animate-css",
+        "dotenv"
+      ],
+      "ignoreBinaries": [
+        "next",
+        "eslint",
+        "knip",
+        "depcheck",
+        "drizzle-kit",
+        "vitest",
+        "tsx"
+      ]
+    }
+  }
+}
+

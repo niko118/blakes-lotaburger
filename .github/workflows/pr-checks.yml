@@ -1,0 +1,254 @@
+name: PR Quality Checks
+
+on:
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "packages/**"
+      - "package*.json"
+      - "turbo.json"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  # REQUIRED: Build verification
+  build:
+    name: Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run -w web build
+        env:
+          SKIP_ENV_VALIDATION: true
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PREVIEW }}
+
+      - name: Verify build output
+        run: |
+          if [ ! -d "apps/web/.next" ]; then
+            echo "❌ Build failed: .next directory not found"
+            exit 1
+          fi
+          echo "✅ Build successful"
+
+  # REQUIRED: TypeScript validation
+  typecheck:
+    name: TypeScript Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit -p apps/web/tsconfig.json
+
+  # REQUIRED: Linting
+  lint:
+    name: ESLint Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+      - name: Run ESLint
+        run: npm run -w web lint
+
+  # ADVISORY: Dead code
+  deadcode:
+    name: Dead Code Analysis
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+      - name: Run knip
+        run: npm run -w web deadcode
+        continue-on-error: true
+
+  # ADVISORY: Unused dependencies
+  deps:
+    name: Dependency Analysis
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+      - name: Check unused deps
+        run: npm run -w web deps:unused
+        continue-on-error: true
+
+  # CONDITIONAL: Migration validation
+  migration-check:
+    name: Migration Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for schema changes
+        id: schema-check
+        run: |
+          if git diff origin/main...HEAD -- apps/web/lib/db/schema.ts | grep -q "^[+-]"; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate migration exists
+        if: steps.schema-check.outputs.changed == 'true'
+        run: |
+          if ! git diff origin/main...HEAD -- apps/web/lib/db/migrations/meta/_journal.json | grep -q "^+"; then
+            echo "❌ Schema changed but no migration added"
+            echo "Run: npm run -w web db:generate"
+            exit 1
+          fi
+          echo "✅ Migration journal updated"
+
+  # CRITICAL: Migration safety check
+  migration-safety-check:
+    name: Migration Safety Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check for forbidden migration imports in runtime code
+        run: |
+          echo "Checking for forbidden migration code in application runtime..."
+          
+          # Check if any non-script file imports drizzle-kit or migrate functions
+          # We check apps/web/app (runtime) and apps/web/lib (shared code, excluding scripts)
+          # Exclude db.ts (contains intentional migration guard)
+          FORBIDDEN_IMPORTS=$(grep -r \
+            -E "(import.*migrate|from.*['\"]drizzle-kit['\"]|from.*['\"]drizzle-orm/migrator['\"]|from.*['\"]drizzle-orm.*migrator)" \
+            apps/web/app apps/web/lib \
+            --include="*.ts" --include="*.tsx" \
+            --exclude-dir=migrations \
+            --exclude="db.ts" \
+            || true)
+          
+          if [ -n "$FORBIDDEN_IMPORTS" ]; then
+            echo "❌ FORBIDDEN: Migration code found in application runtime"
+            echo ""
+            echo "The following files contain forbidden migration imports:"
+            echo "$FORBIDDEN_IMPORTS"
+            echo ""
+            echo "⚠️  SECURITY RISK: Migrations MUST only be run in CI (GitHub Actions)"
+            echo "    - DEV: .github/workflows/deploy-dev.yml"
+            echo "    - PROD: .github/workflows/deploy-prod.yml"
+            echo ""
+            echo "❌ NEVER import migrate() or drizzle-kit in:"
+            echo "    - apps/web/app/ (API routes, pages, components)"
+            echo "    - apps/web/lib/ (shared utilities, excluding scripts/)"
+            echo ""
+            echo "✅ Only use these in package.json scripts for local development"
+            exit 1
+          fi
+          
+          echo "✅ No forbidden migration imports found in runtime code"
+      
+      - name: Verify migration scripts use local-only configuration
+        run: |
+          echo "Verifying migration scripts are configured for local use only..."
+          
+          # Ensure db:migrate scripts use DOTENV_CONFIG_PATH (local only)
+          if ! grep -q "DOTENV_CONFIG_PATH=.env.local" apps/web/package.json; then
+            echo "❌ db:migrate script must use DOTENV_CONFIG_PATH=.env.local"
+            echo "   This ensures migrations never run from Vercel deployments"
+            exit 1
+          fi
+          
+          echo "✅ Migration scripts correctly configured for local use only"
+      
+      - name: Verify no lifecycle hooks run migrations
+        run: |
+          echo "Checking for dangerous lifecycle hooks..."
+          
+          # Check for postinstall, postbuild, or prestart hooks that might run migrations
+          LIFECYCLE_HOOKS=$(grep -E "(postinstall|postbuild|prestart).*db:(migrate|push|generate)" \
+            package.json apps/web/package.json \
+            || true)
+          
+          if [ -n "$LIFECYCLE_HOOKS" ]; then
+            echo "❌ FORBIDDEN: Lifecycle hooks cannot run migrations"
+            echo ""
+            echo "Found:"
+            echo "$LIFECYCLE_HOOKS"
+            echo ""
+            echo "This would cause migrations to run during Vercel builds!"
+            exit 1
+          fi
+          
+          echo "✅ No dangerous lifecycle hooks found"
+
+  # SUMMARY: All checks status
+  all-checks:
+    name: All Checks Status
+    runs-on: ubuntu-latest
+    needs: [build, typecheck, lint]
+    if: always()
+    steps:
+      - name: Check required jobs
+        run: |
+          if [ "${{ needs.build.result }}" != "success" ] || \
+             [ "${{ needs.typecheck.result }}" != "success" ] || \
+             [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "❌ Required checks failed"
+            exit 1
+          fi
+          echo "✅ All required checks passed"
+
+      - name: Comment PR status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const buildStatus = '${{ needs.build.result }}' === 'success' ? '✅' : '❌';
+            const typecheckStatus = '${{ needs.typecheck.result }}' === 'success' ? '✅' : '❌';
+            const lintStatus = '${{ needs.lint.result }}' === 'success' ? '✅' : '❌';
+
+            const body = `## PR Quality Check Results
+
+            **Required Checks:**
+            ${buildStatus} Build Check
+            ${typecheckStatus} TypeScript Check
+            ${lintStatus} ESLint Check
+
+            ${buildStatus === '✅' && typecheckStatus === '✅' && lintStatus === '✅' 
+              ? '✅ **All quality checks passed!** PR is ready for review.' 
+              : '❌ **Some checks failed.** Please fix issues before merging.'}`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

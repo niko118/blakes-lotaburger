@@ -1,0 +1,42 @@
+{
+  "name": "nextjs-graphql-template",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "check-types": "turbo run check-types",
+    "clean": "turbo run clean || true && git clean -fdX",
+    "prepare": "husky",
+    "db:help": "node scripts/db-help.js",
+    "db:local:start": "supabase start && echo '\n💡 Need help? Run: npm run db:help'",
+    "db:local:stop": "supabase stop",
+    "db:local:reset": "supabase db reset && echo '\n💡 Run migrations: npm run db:migrate'",
+    "db:local:status": "supabase status && echo '\n💡 Need help? Run: npm run db:help'",
+    "db:migrate": "npm run -w web db:migrate && echo '\n💡 Migrations applied! See docs: docs/local-development-setup.md'",
+    "db:generate": "npm run -w web db:generate && echo '\n💡 Migration created! Apply with: npm run db:migrate'",
+    "db:local:sync": "node scripts/sync-prod-to-local.js"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.6",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.6",
+    "turbo": "^2.5.8",
+    "typescript": "5.9.2"
+  },
+  "lint-staged": {
+    "apps/web/**/*.{ts,tsx}": [
+      "cd apps/web && npx eslint --fix"
+    ]
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "npm@10.7.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

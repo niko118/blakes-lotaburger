@@ -1,0 +1,110 @@
+name: Deploy to DEV
+
+on:
+  push:
+    branches:
+      - dev
+  
+  # Run on PRs to master to apply migrations to DEV before preview deployment
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - master
+    paths:
+      - 'apps/web/lib/db/schema.ts'
+      - 'apps/web/lib/db/migrations/**'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+
+# Prevent concurrent runs to avoid race conditions with migrations
+concurrency:
+  group: dev-database-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          # For PRs, checkout the head branch; for push events, use default ref
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run migrations on DEV
+        id: migrate
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DEV_DB_URL }}
+        run: |
+          echo "Checking for new migrations to apply to DEV database..."
+          
+          # Capture migration output
+          MIGRATE_OUTPUT=$(npm run -w web db:migrate 2>&1)
+          echo "$MIGRATE_OUTPUT"
+          
+          # Extract migration file name if present
+          MIGRATION_NAME=$(echo "$MIGRATE_OUTPUT" | grep -oP '0\d+_[a-z_]+\.sql' | head -1 || echo "")
+          
+          # A migration was applied ONLY if we found a .sql file in the output
+          if [ -n "$MIGRATION_NAME" ]; then
+            echo "migration_applied=true" >> $GITHUB_OUTPUT
+            echo "migration_status=Migration applied: $MIGRATION_NAME" >> $GITHUB_OUTPUT
+            echo "✓ New migration applied: $MIGRATION_NAME"
+          elif echo "$MIGRATE_OUTPUT" | grep -qE "(No migrations to apply|No new migrations)"; then
+            echo "migration_applied=false" >> $GITHUB_OUTPUT
+            echo "migration_status=No new migrations to apply" >> $GITHUB_OUTPUT
+            echo "✓ No new migrations needed"
+          else
+            # Success message but no .sql file = no new migrations, just schema check
+            echo "migration_applied=false" >> $GITHUB_OUTPUT
+            echo "migration_status=No new migrations to apply (schema check only)" >> $GITHUB_OUTPUT
+            echo "✓ No new migrations needed (schema verified)"
+          fi
+          
+          echo "✓ Migration check completed"
+      
+      # Only deploy Edge Functions on push to dev, not on PRs
+      - name: Install Supabase CLI
+        if: github.event_name == 'push'
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      
+      - name: Deploy Edge Functions to DEV
+        if: github.event_name == 'push'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          echo "Deploying Edge Functions to DEV..."
+          supabase functions deploy --project-ref ${{ secrets.SUPABASE_DEV_PROJECT_REF }}
+          echo "✓ Edge Functions deployed successfully"
+      
+      # Comment on PR only when a new migration was applied
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && steps.migrate.outputs.migration_applied == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const migrationStatus = '${{ steps.migrate.outputs.migration_status }}';
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✅ **New Migration Applied**\n\nA new migration has been applied to the DEV database.\n\n**Status:** ${migrationStatus}\n\nYour Vercel preview will connect to DEV with the updated schema.`
+            });

@@ -1,0 +1,23 @@
+{
+  "ignoreMatches": [
+    "@repo/eslint-config",
+    "@repo/typescript-config",
+    "@repo/ui",
+    "eslint-config-next",
+    "next",
+    "typescript",
+    "eslint",
+    "@types/*",
+    "postcss",
+    "autoprefixer",
+    "tailwindcss",
+    "@tailwindcss/postcss"
+  ],
+  "ignoreDirs": [
+    "node_modules",
+    ".next",
+    "out",
+    "build"
+  ]
+}
+

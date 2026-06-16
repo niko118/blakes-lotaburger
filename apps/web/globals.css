@@ -1,0 +1,215 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+html {
+  scrollbar-gutter: stable;
+}
+
+:root {
+  /* Shadcn/UI theme variables */
+  --background: #ffffff;
+  --foreground: #4b5563;
+  --card: #f5f5f5;
+  --card-foreground: #4b5563;
+  --popover: #ffffff;
+  --popover-foreground: #4b5563;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --secondary: #4f46e5;
+  --secondary-foreground: #ffffff;
+  --muted: #f5f5f5;
+  --muted-foreground: #4b5563;
+  --accent: #eef2ff;
+  --accent-foreground: #6366f1;
+  --destructive: #e53e3e;
+  --destructive-foreground: #ffffff;
+  --border: #e5e7eb;
+  --input: #ffffff;
+  --ring: rgba(0, 0, 0, 0.1);
+  --chart-1: #6366f1;
+  --chart-2: #818cf8;
+  --chart-3: #059669;
+  --chart-4: #be123c;
+  --chart-5: #ec4899;
+  --radius: 0.5rem;
+  --sidebar: #4f46e5;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #4f46e5;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef2ff;
+  --sidebar-accent-foreground: #6366f1;
+  --sidebar-border: #4b5563;
+  --sidebar-ring: rgba(0, 0, 0, 0.1);
+
+  /* Custom color palette */
+  --red-dark: #aa2525;
+  --red: #ce484a;
+  --red-soft: #ff8787;
+  --red-light: #fec8c8;
+  --red-extra-light: #fff5f5;
+  --green-darkest: #24834e;
+  --green-dark: #32b76c;
+  --green: #18d56b;
+  --green-soft: #6de5a2;
+  --green-light: #cff7e1;
+  --green-extra-light: #ecfcf3;
+  --yellow-darkest: #b67808;
+  --yellow-dark: #de9209;
+  --yellow: #f7af2d;
+  --yellow-soft: #ffce75;
+  --yellow-light: #fdf1cf;
+  --yellow-extra-light: #fffdf0;
+  --white: #ffffff;
+  --steel: #3d423b;
+  --pickled-black: #2d322b;
+  --dark-grey: #5c605b;
+  --catskill-grey: #f3f3f3;
+  --botticelli-grey: #cbd2c7;
+  --silver: #6e746c;
+  --rain: #484c46;
+  --cloud: #e4e7e2;
+  --fog: #f7f9f6;
+  --primary-dark: #4338ca;
+  --primary: #6366f1;
+  --primary-soft: #818cf8;
+  --primary-light: #c7d2fe;
+  --primary-extra-light: #eef2ff;
+}
+
+.dark {
+  --background: #1f2937;
+  --foreground: #f9fafb;
+  --card: #374151;
+  --card-foreground: #f9fafb;
+  --popover: #1f2937;
+  --popover-foreground: #f9fafb;
+  --primary: #818cf8;
+  --primary-foreground: #ffffff;
+  --secondary: #6366f1;
+  --secondary-foreground: #ffffff;
+  --muted: #374151;
+  --muted-foreground: #9ca3af;
+  --accent: #4338ca;
+  --accent-foreground: #c7d2fe;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #4b5563;
+  --input: #374151;
+  --ring: rgba(255, 255, 255, 0.1);
+  --chart-1: #818cf8;
+  --chart-2: #a5b4fc;
+  --chart-3: #10b981;
+  --chart-4: #f43f5e;
+  --chart-5: #ec4899;
+  --sidebar: #6366f1;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #6366f1;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #4338ca;
+  --sidebar-accent-foreground: #c7d2fe;
+  --sidebar-border: #4b5563;
+  --sidebar-ring: rgba(255, 255, 255, 0.1);
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Custom color palette for Tailwind */
+  --color-red-dark: var(--red-dark);
+  --color-red: var(--red);
+  --color-red-soft: var(--red-soft);
+  --color-red-light: var(--red-light);
+  --color-red-extra-light: var(--red-extra-light);
+  --color-green-darkest: var(--green-darkest);
+  --color-green-dark: var(--green-dark);
+  --color-green: var(--green);
+  --color-green-soft: var(--green-soft);
+  --color-green-light: var(--green-light);
+  --color-green-extra-light: var(--green-extra-light);
+  --color-yellow-darkest: var(--yellow-darkest);
+  --color-yellow-dark: var(--yellow-dark);
+  --color-yellow: var(--yellow);
+  --color-yellow-soft: var(--yellow-soft);
+  --color-yellow-light: var(--yellow-light);
+  --color-yellow-extra-light: var(--yellow-extra-light);
+  --color-white: var(--white);
+  --color-steel: var(--steel);
+  --color-pickled-black: var(--pickled-black);
+  --color-dark-grey: var(--dark-grey);
+  --color-catskill-grey: var(--catskill-grey);
+  --color-botticelli-grey: var(--botticelli-grey);
+  --color-silver: var(--silver);
+  --color-rain: var(--rain);
+  --color-cloud: var(--cloud);
+  --color-fog: var(--fog);
+  --color-primary-dark: var(--primary-dark);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-light: var(--primary-light);
+  --color-primary-extra-light: var(--primary-extra-light);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Marquee animation for scrolling text */
+@keyframes marquee {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  animation: marquee 10s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}

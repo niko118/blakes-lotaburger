@@ -1,0 +1,24 @@
+{
+  "ignores": [
+    "@components/*",
+    "@lib/*",
+    "@graphql/*",
+    "@hooks/*",
+    "@app-types",
+    "@repo/eslint-config",
+    "@repo/typescript-config",
+    "@tailwindcss/postcss",
+    "postcss",
+    "tailwindcss",
+    "eslint",
+    "eslint-config-next",
+    "@typescript-eslint/eslint-plugin",
+    "eslint-plugin-unused-imports",
+    "knip",
+    "depcheck",
+    "tw-animate-css",
+    "dotenv"
+  ],
+  "skip-missing": true
+}
+
