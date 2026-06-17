@@ -45,7 +45,9 @@ export async function POST(req: NextRequest) {
     let groups: { id: number; name: string; parentId: number | null; reportType: string; sortOrder: number; subtotalAfter: boolean; contributesAs: string | null; eliminateCommissary: boolean }[] = [];
     let mappings: { accountName: string; groupId: number | null; ignored: boolean }[] = [];
 
-    if (reportType === "summary-pnl" || reportType === "balance-sheet") {
+    // All P&L reports (summary + the two detail tabs) and the balance sheet are
+    // seed-driven, so every report needs the groups/mappings.
+    {
       [groups, mappings] = await Promise.all([
         db.select().from(reportGroups).orderBy(reportGroups.sortOrder),
         db.select({

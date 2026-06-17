@@ -53,59 +53,6 @@ function variancePct(current: number | null, prior: number | null): string {
   return `${((v / Math.abs(prior)) * 100).toFixed(1)}%`;
 }
 
-// Group rows by section (section header → atomic accounts). Skips R365 Total rows.
-interface Section {
-  header: string;
-  accounts: PnLRow[];
-}
-
-function groupPnLBySections(rows: PnLRow[]): Section[] {
-  const sections: Section[] = [];
-  let current: Section | null = null;
-
-  for (const row of rows) {
-    if (row.isSectionHeader) {
-      if (current) sections.push(current);
-      current = { header: row.name, accounts: [] };
-    } else if (!row.isTotal && current) {
-      current.accounts.push(row);
-    }
-    // isTotal rows from R365 are intentionally skipped; we compute our own totals
-  }
-  if (current) sections.push(current);
-  return sections;
-}
-
-// LEGACY — used only by the detail reports (buildDetailSheet), which are
-// pending a refactor to the seed-driven engine. Do NOT use for new code.
-// The workbook's actual elimination is commissary total SALES (see
-// commissarySalesTotal), not sales − food cost.
-function computeElimination(
-  commissaryPnL: ParsedPnL,
-  getValue: (row: PnLRow) => number | null
-): number {
-  let totalSales = 0;
-  let totalFoodCost = 0;
-  let currentSection = "";
-
-  for (const row of commissaryPnL.rows) {
-    if (row.isSectionHeader) {
-      currentSection = row.name.toLowerCase();
-      continue;
-    }
-    if (row.isTotal) continue;
-
-    const val = getValue(row) ?? 0;
-    if (currentSection.includes("sale")) {
-      totalSales += val;
-    } else if (currentSection.includes("food") || currentSection.includes("cost of food")) {
-      totalFoodCost += val;
-    }
-  }
-
-  return totalSales - totalFoodCost;
-}
-
 // Commissary intercompany elimination amount, fully data-driven: the sum of the
 // commissary P&L's revenue accounts — identified via the account mapping
 // (accounts mapped to a group whose section is flagged contributesAs='revenue').
@@ -131,99 +78,162 @@ function commissarySalesTotal(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Detail report builder (CM vs PM and CY vs PY share the same structure)
+// Shared P&L aggregation — the single model the 3 P&L reports render from.
+// Summary renders group subtotals; CM/CY render each account; both reuse this.
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ValueSet = {
-  current: number | null;
-  prior: number | null;
-};
-
-function getDetailValues(row: PnLRow, mode: "period" | "ytd"): ValueSet {
-  return mode === "period"
-    ? { current: row.periodActual, prior: row.periodPriorYear }
-    : { current: row.ytdActual, prior: row.ytdPriorYear };
+// Period + YTD, actual + prior year, carried together so renderers pick columns.
+interface Vals { period: number; periodPY: number; ytd: number; ytdPY: number; }
+const zeroVals = (): Vals => ({ period: 0, periodPY: 0, ytd: 0, ytdPY: 0 });
+function addRow(t: Vals, r: PnLRow): void {
+  t.period += r.periodActual ?? 0;
+  t.periodPY += r.periodPriorYear ?? 0;
+  t.ytd += r.ytdActual ?? 0;
+  t.ytdPY += r.ytdPriorYear ?? 0;
+}
+function addVals(t: Vals, v: Vals): void {
+  t.period += v.period; t.periodPY += v.periodPY; t.ytd += v.ytd; t.ytdPY += v.ytdPY;
+}
+function negVals(v: Vals): Vals {
+  return { period: -v.period, periodPY: -v.periodPY, ytd: -v.ytd, ytdPY: -v.ytdPY };
 }
 
-function buildDetailSheet(
-  parsedFiles: ParsedFiles,
-  mode: "period" | "ytd"
-): XLSX.WorkSheet {
+interface PnLAccount { name: string; vals: Vals; }
+interface PnLGroup { name: string; subtotalAfter: boolean; vals: Vals; accounts: PnLAccount[]; }
+interface PnLSection {
+  name: string;
+  isRevenue: boolean;
+  groups: PnLGroup[];
+  eliminate: Vals | null; // commissary amount netted out of this section, or null
+  total: Vals; // section total, AFTER elimination
+}
+interface PnLModel { sections: PnLSection[]; netIncome: Vals; salesBase: Vals; }
+
+function aggregatePnL(parsedFiles: ParsedFiles, groups: DbGroup[], mappings: DbMapping[]): PnLModel {
   const { consolidatedPnL, commissaryPnL } = parsedFiles;
-  const colLabel = mode === "period" ? "Current Period" : "YTD";
-  const priorLabel = mode === "period" ? "Prior Year Period" : "Prior Year YTD";
 
-  const periodElim = computeElimination(commissaryPnL, (r) =>
-    mode === "period" ? r.periodActual : r.ytdActual
-  );
-
-  const data: (string | number | null)[][] = [];
-
-  // Title rows
-  data.push([`Report: ${mode === "period" ? "CM vs PM (Current Period vs Prior Year Period)" : "CY vs PY (YTD vs Prior Year YTD)"}`]);
-  data.push([`Period: ${consolidatedPnL.periodEnding}`]);
-  data.push([`Location: ${consolidatedPnL.location}`]);
-  data.push([]);
-
-  // Header row
-  data.push(["Account Name", colLabel, priorLabel, "$ Variance", "% Variance"]);
-
-  const sections = groupPnLBySections(consolidatedPnL.rows);
-
-  let grandCurrentTotal = 0;
-  let grandPriorTotal = 0;
-
-  for (const section of sections) {
-    // Section header
-    data.push([section.header.toUpperCase(), null, null, null, null]);
-
-    let sectionCurrentTotal = 0;
-    let sectionPriorTotal = 0;
-
-    for (const row of section.accounts) {
-      const { current, prior } = getDetailValues(row, mode);
-      const var$ = variance(current, prior);
-      sectionCurrentTotal += current ?? 0;
-      sectionPriorTotal += prior ?? 0;
-      data.push([row.name, current, prior, var$, variancePct(current, prior)]);
-    }
-
-    // Commissary elimination: insert after food cost / cost of food section
-    const isFoodSection =
-      section.header.toLowerCase().includes("food") ||
-      section.header.toLowerCase().includes("cost of food");
-
-    if (isFoodSection && periodElim !== 0) {
-      const elimVal = -periodElim; // negative = reducing food cost
-      sectionCurrentTotal += elimVal;
-      data.push(["  Commissary Elimination", elimVal, null, null, null]);
-    }
-
-    // Section total
-    const secVar = variance(sectionCurrentTotal, sectionPriorTotal);
-    data.push([
-      `Total ${section.header}`,
-      sectionCurrentTotal,
-      sectionPriorTotal,
-      secVar,
-      variancePct(sectionCurrentTotal, sectionPriorTotal),
-    ]);
-    data.push([]);
-
-    grandCurrentTotal += sectionCurrentTotal;
-    grandPriorTotal += sectionPriorTotal;
+  const mappingMap = new Map<string, number | null>();
+  const ignoredSet = new Set<string>();
+  for (const m of mappings) {
+    if (m.ignored) ignoredSet.add(m.accountName);
+    else mappingMap.set(m.accountName, m.groupId);
   }
 
-  // Grand total
-  const grandVar = variance(grandCurrentTotal, grandPriorTotal);
-  data.push([
-    "TOTAL",
-    grandCurrentTotal,
-    grandPriorTotal,
-    grandVar,
-    variancePct(grandCurrentTotal, grandPriorTotal),
-  ]);
+  const pnlGroups = groups.filter((g) => g.reportType === "pnl");
+  const sectionDefs = pnlGroups.filter((g) => g.parentId === null).sort((a, b) => a.sortOrder - b.sortOrder);
+  const groupDefsByParent = new Map<number, DbGroup[]>();
+  for (const g of pnlGroups) {
+    if (g.parentId !== null) {
+      const arr = groupDefsByParent.get(g.parentId) ?? [];
+      arr.push(g);
+      groupDefsByParent.set(g.parentId, arr);
+    }
+  }
 
+  // Consolidated accounts collected per group, preserving R365 file order.
+  const accountsByGroup = new Map<number, PnLAccount[]>();
+  for (const row of consolidatedPnL.rows) {
+    if (row.isSectionHeader || row.isTotal) continue;
+    if (ignoredSet.has(row.name)) continue;
+    const groupId = mappingMap.get(row.name);
+    if (!groupId) continue; // unmapped — excluded (accounts are force-mapped before generation)
+    const vals = zeroVals();
+    addRow(vals, row);
+    const arr = accountsByGroup.get(groupId) ?? [];
+    arr.push({ name: row.name, vals });
+    accountsByGroup.set(groupId, arr);
+  }
+
+  // Commissary elimination = commissary total sales (revenue-flagged sections),
+  // netted out of every section flagged eliminateCommissary, on all 4 columns.
+  const revenueSectionIds = new Set(sectionDefs.filter((s) => s.contributesAs === "revenue").map((s) => s.id));
+  const revenueGroupIds = new Set(
+    pnlGroups.filter((g) => g.parentId !== null && revenueSectionIds.has(g.parentId)).map((g) => g.id)
+  );
+  const elim: Vals = {
+    period: commissarySalesTotal(commissaryPnL, mappingMap, ignoredSet, revenueGroupIds, (r) => r.periodActual),
+    periodPY: commissarySalesTotal(commissaryPnL, mappingMap, ignoredSet, revenueGroupIds, (r) => r.periodPriorYear),
+    ytd: commissarySalesTotal(commissaryPnL, mappingMap, ignoredSet, revenueGroupIds, (r) => r.ytdActual),
+    ytdPY: commissarySalesTotal(commissaryPnL, mappingMap, ignoredSet, revenueGroupIds, (r) => r.ytdPriorYear),
+  };
+
+  const sections: PnLSection[] = [];
+  const netIncome = zeroVals();
+  const salesBase = zeroVals();
+
+  for (const sec of sectionDefs) {
+    const isRevenue = sec.contributesAs === "revenue";
+    const groupList: PnLGroup[] = [];
+    const total = zeroVals();
+
+    const defs = (groupDefsByParent.get(sec.id) ?? []).sort((a, b) => a.sortOrder - b.sortOrder);
+    for (const gd of defs) {
+      const accounts = accountsByGroup.get(gd.id) ?? [];
+      const gvals = zeroVals();
+      for (const a of accounts) addVals(gvals, a.vals);
+      groupList.push({ name: gd.name, subtotalAfter: gd.subtotalAfter, vals: gvals, accounts });
+      addVals(total, gvals);
+    }
+
+    const eliminate = sec.eliminateCommissary ? elim : null;
+    if (eliminate) addVals(total, negVals(eliminate));
+
+    sections.push({ name: sec.name, isRevenue, groups: groupList, eliminate, total });
+
+    // Net Income: revenue adds, cost subtracts. Revenue defines the % sales base.
+    if (isRevenue) { addVals(netIncome, total); addVals(salesBase, total); }
+    else addVals(netIncome, negVals(total));
+  }
+
+  return { sections, netIncome, salesBase };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Detail renderer (CM vs PM = period columns, CY vs PY = YTD columns).
+// Lists every account; group subtotals only where subtotalAfter is set.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function renderDetailPnL(model: PnLModel, meta: ParsedPnL, mode: "period" | "ytd"): XLSX.WorkSheet {
+  const cur = (v: Vals) => (mode === "period" ? v.period : v.ytd);
+  const pri = (v: Vals) => (mode === "period" ? v.periodPY : v.ytdPY);
+  const sales = cur(model.salesBase);
+  const salesPrior = pri(model.salesBase);
+
+  const title = mode === "period"
+    ? "CM vs PM (Current Period vs Prior Year Period)"
+    : "CY vs PY (YTD vs Prior Year YTD)";
+  const curLabel = mode === "period" ? "Current Period" : "YTD Actual";
+  const priLabel = mode === "period" ? "Prior Year Period" : "Prior Year YTD";
+
+  const data: (string | number | null)[][] = [];
+  data.push([`Report: ${title}`]);
+  data.push([`Period: ${meta.periodEnding}`]);
+  data.push([`Location: ${meta.location}`]);
+  data.push([]);
+  data.push(["Account Name", curLabel, "% Sales", priLabel, "PY % Sales", "$ Variance", "% Variance"]);
+
+  const line = (label: string, vals: Vals) => {
+    const c = cur(vals), p = pri(vals);
+    data.push([label, c || null, pct(c, sales), p || null, pct(p, salesPrior), variance(c, p), variancePct(c, p)]);
+  };
+
+  for (const section of model.sections) {
+    data.push([section.name.toUpperCase(), null, null, null, null, null, null]);
+
+    const running = zeroVals();
+    for (const group of section.groups) {
+      for (const acc of group.accounts) line(`  ${acc.name}`, acc.vals);
+      addVals(running, group.vals);
+      // Intermediate subtotal (pre-elimination), e.g. raw "Total Food Cost".
+      if (group.subtotalAfter) line(`Total ${section.name}`, running);
+    }
+
+    if (section.eliminate) line("  Commissary Elimination", negVals(section.eliminate));
+    line(`Total ${section.name}`, section.total);
+    data.push([]);
+  }
+
+  line("NET INCOME / (LOSS)", model.netIncome);
   return XLSX.utils.aoa_to_sheet(data);
 }
 
@@ -231,85 +241,13 @@ function buildDetailSheet(
 // Summary P&L (account-mapping based)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildSummaryPnLSheet(
-  parsedFiles: ParsedFiles,
-  groups: DbGroup[],
-  mappings: DbMapping[]
-): XLSX.WorkSheet {
-  const { consolidatedPnL, commissaryPnL } = parsedFiles;
+function renderSummaryPnL(model: PnLModel, meta: ParsedPnL): XLSX.WorkSheet {
+  const sales = model.salesBase;
 
-  // Build lookup: accountName → groupId
-  const mappingMap = new Map<string, number | null>();
-  const ignoredSet = new Set<string>();
-  for (const m of mappings) {
-    if (m.ignored) {
-      ignoredSet.add(m.accountName);
-    } else {
-      mappingMap.set(m.accountName, m.groupId);
-    }
-  }
-
-  // Build group hierarchy: sections (parentId=null) and their children
-  const pnlGroups = groups.filter((g) => g.reportType === "pnl");
-  const sections = pnlGroups.filter((g) => g.parentId === null).sort((a, b) => a.sortOrder - b.sortOrder);
-  const childrenByParent = new Map<number, DbGroup[]>();
-  for (const g of pnlGroups) {
-    if (g.parentId !== null) {
-      const arr = childrenByParent.get(g.parentId) ?? [];
-      arr.push(g);
-      childrenByParent.set(g.parentId, arr);
-    }
-  }
-
-  // Aggregate consolidated P&L atomic accounts into groups
-  interface GroupTotals {
-    period: number;
-    periodPY: number;
-    ytd: number;
-    ytdPY: number;
-  }
-  const groupTotals = new Map<number, GroupTotals>();
-
-  for (const row of consolidatedPnL.rows) {
-    if (row.isSectionHeader || row.isTotal) continue;
-    if (ignoredSet.has(row.name)) continue;
-
-    const groupId = mappingMap.get(row.name);
-    if (!groupId) continue; // unmapped — excluded
-
-    const existing = groupTotals.get(groupId) ?? { period: 0, periodPY: 0, ytd: 0, ytdPY: 0 };
-    groupTotals.set(groupId, {
-      period: existing.period + (row.periodActual ?? 0),
-      periodPY: existing.periodPY + (row.periodPriorYear ?? 0),
-      ytd: existing.ytd + (row.ytdActual ?? 0),
-      ytdPY: existing.ytdPY + (row.ytdPriorYear ?? 0),
-    });
-  }
-
-  // Group ids whose parent section is flagged as revenue — used to identify
-  // commissary revenue accounts for the intercompany elimination.
-  const revenueSectionIds = new Set(
-    sections.filter((s) => s.contributesAs === "revenue").map((s) => s.id)
-  );
-  const revenueGroupIds = new Set(
-    pnlGroups.filter((g) => g.parentId !== null && revenueSectionIds.has(g.parentId)).map((g) => g.id)
-  );
-
-  // Commissary intercompany elimination = commissary total sales (period & YTD).
-  // Netted out of BOTH the Sales and Food Cost sections (flagged eliminateCommissary).
-  const periodElim = commissarySalesTotal(commissaryPnL, mappingMap, ignoredSet, revenueGroupIds, (r) => r.periodActual);
-  const ytdElim = commissarySalesTotal(commissaryPnL, mappingMap, ignoredSet, revenueGroupIds, (r) => r.ytdActual);
-
-  // Sales base for "% of sales" (net revenue-section totals)
-  let totalSalesPeriod = 0;
-  let totalSalesYTD = 0;
-
-  // Build output
   const data: (string | number | null)[][] = [];
-
   data.push(["Summary P&L"]);
-  data.push([`Period: ${consolidatedPnL.periodEnding}`]);
-  data.push([`Location: ${consolidatedPnL.location}`]);
+  data.push([`Period: ${meta.periodEnding}`]);
+  data.push([`Location: ${meta.location}`]);
   data.push([]);
   data.push([
     "Line Item",
@@ -327,158 +265,96 @@ function buildSummaryPnLSheet(
     "% Var",
   ]);
 
-  // Net income is accumulated by sign: revenue sections add, cost sections
-  // subtract. Driven by the section's contributesAs flag (no name matching).
-  let revenuePeriod = 0;
-  let revenuePeriodPY = 0;
-  let revenueYTD = 0;
-  let revenueYTDPY = 0;
-  let costPeriod = 0;
-  let costPeriodPY = 0;
-  let costYTD = 0;
-  let costYTDPY = 0;
-
-  for (const section of sections) {
-    const children = (childrenByParent.get(section.id) ?? []).sort((a, b) => a.sortOrder - b.sortOrder);
-    const isRevenueSection = section.contributesAs === "revenue";
-    const applyElim = section.eliminateCommissary === true;
-
-    let sectionPeriod = 0;
-    let sectionPeriodPY = 0;
-    let sectionYTD = 0;
-    let sectionYTDPY = 0;
-
+  for (const section of model.sections) {
     // Section header row
     data.push([section.name.toUpperCase(), null, null, null, null, null, null, null, null, null, null, null, null]);
 
-    for (const group of children) {
-      const totals = groupTotals.get(group.id);
-      const p = totals?.period ?? 0;
-      const pPY = totals?.periodPY ?? 0;
-      const y = totals?.ytd ?? 0;
-      const yPY = totals?.ytdPY ?? 0;
-
-      sectionPeriod += p;
-      sectionPeriodPY += pPY;
-      sectionYTD += y;
-      sectionYTDPY += yPY;
-
-      const pVar = variance(p, pPY);
-      const yVar = variance(y, yPY);
-
+    const running = zeroVals();
+    for (const group of section.groups) {
+      const v = group.vals;
       data.push([
         `  ${group.name}`,
-        p || null,
-        null, // % of sales computed after we know section sales total
-        pPY || null,
+        v.period || null,
+        null, // group-level % of sales intentionally omitted
+        v.periodPY || null,
         null,
-        pVar,
-        variancePct(p, pPY),
-        y || null,
+        variance(v.period, v.periodPY),
+        variancePct(v.period, v.periodPY),
+        v.ytd || null,
         null,
-        yPY || null,
+        v.ytdPY || null,
         null,
-        yVar,
-        variancePct(y, yPY),
+        variance(v.ytd, v.ytdPY),
+        variancePct(v.ytd, v.ytdPY),
       ]);
 
-      // Intermediate subtotal: emit a running subtotal of the section up to
-      // and including this group (e.g. "Total Food Cost" for raw food only,
-      // before Beverage Cost and Freight are added in).
+      addVals(running, v);
+      // Intermediate subtotal (pre-elimination), e.g. raw "Total Food Cost".
       if (group.subtotalAfter) {
         data.push([
           `Total ${section.name}`,
-          sectionPeriod || null,
-          null, // % of sales filled in below once section sales known
-          sectionPeriodPY || null,
+          running.period || null,
           null,
-          variance(sectionPeriod, sectionPeriodPY),
-          variancePct(sectionPeriod, sectionPeriodPY),
-          sectionYTD || null,
+          running.periodPY || null,
           null,
-          sectionYTDPY || null,
+          variance(running.period, running.periodPY),
+          variancePct(running.period, running.periodPY),
+          running.ytd || null,
           null,
-          variance(sectionYTD, sectionYTDPY),
-          variancePct(sectionYTD, sectionYTDPY),
+          running.ytdPY || null,
+          null,
+          variance(running.ytd, running.ytdPY),
+          variancePct(running.ytd, running.ytdPY),
         ]);
       }
     }
 
-    // Apply commissary elimination to every flagged section (Sales and Food
-    // Cost). The same amount (commissary total sales) is netted out of both.
-    if (applyElim && (periodElim !== 0 || ytdElim !== 0)) {
-      sectionPeriod += -periodElim;
-      sectionYTD += -ytdElim;
+    if (section.eliminate) {
+      const e = negVals(section.eliminate);
       data.push([
         "  Commissary Elimination",
-        -periodElim || null,
+        e.period || null,
         null, null, null,
         null, null,
-        -ytdElim || null,
+        e.ytd || null,
         null, null, null, null, null,
       ]);
     }
 
-    // Section total. Revenue section establishes the "% of sales" base.
-    if (isRevenueSection) {
-      totalSalesPeriod += sectionPeriod;
-      totalSalesYTD += sectionYTD;
-    }
-
-    const pSecVar = variance(sectionPeriod, sectionPeriodPY);
-    const ySecVar = variance(sectionYTD, sectionYTDPY);
-
+    const t = section.total;
     data.push([
       `Total ${section.name}`,
-      sectionPeriod || null,
-      pct(sectionPeriod, totalSalesPeriod),
-      sectionPeriodPY || null,
-      pct(sectionPeriodPY, totalSalesPeriod),
-      pSecVar,
-      variancePct(sectionPeriod, sectionPeriodPY),
-      sectionYTD || null,
-      pct(sectionYTD, totalSalesYTD),
-      sectionYTDPY || null,
-      pct(sectionYTDPY, totalSalesYTD),
-      ySecVar,
-      variancePct(sectionYTD, sectionYTDPY),
+      t.period || null,
+      pct(t.period, sales.period),
+      t.periodPY || null,
+      pct(t.periodPY, sales.period),
+      variance(t.period, t.periodPY),
+      variancePct(t.period, t.periodPY),
+      t.ytd || null,
+      pct(t.ytd, sales.ytd),
+      t.ytdPY || null,
+      pct(t.ytdPY, sales.ytd),
+      variance(t.ytd, t.ytdPY),
+      variancePct(t.ytd, t.ytdPY),
     ]);
     data.push([]);
-
-    if (isRevenueSection) {
-      revenuePeriod += sectionPeriod;
-      revenuePeriodPY += sectionPeriodPY;
-      revenueYTD += sectionYTD;
-      revenueYTDPY += sectionYTDPY;
-    } else {
-      costPeriod += sectionPeriod;
-      costPeriodPY += sectionPeriodPY;
-      costYTD += sectionYTD;
-      costYTDPY += sectionYTDPY;
-    }
   }
 
-  // Net Income = revenue − costs (subtracting cost sections regardless of sign;
-  // a net-income section like Corporate Overhead that is negative adds back).
-  const netPeriod = revenuePeriod - costPeriod;
-  const netPeriodPY = revenuePeriodPY - costPeriodPY;
-  const netYTD = revenueYTD - costYTD;
-  const netYTDPY = revenueYTDPY - costYTDPY;
-
+  const n = model.netIncome;
   data.push([
     "NET INCOME / (LOSS)",
-    netPeriod || null,
-    pct(netPeriod, totalSalesPeriod),
-    netPeriodPY || null,
-    pct(netPeriodPY, totalSalesPeriod),
-    variance(netPeriod, netPeriodPY),
-    variancePct(netPeriod, netPeriodPY),
-    netYTD || null,
-    pct(netYTD, totalSalesYTD),
-    netYTDPY || null,
-    pct(netYTDPY, totalSalesYTD),
-    variance(netYTD, netYTDPY),
-    variancePct(netYTD, netYTDPY),
+    n.period || null,
+    pct(n.period, sales.period),
+    n.periodPY || null,
+    pct(n.periodPY, sales.period),
+    variance(n.period, n.periodPY),
+    variancePct(n.period, n.periodPY),
+    n.ytd || null,
+    pct(n.ytd, sales.ytd),
+    n.ytdPY || null,
+    pct(n.ytdPY, sales.ytd),
+    variance(n.ytd, n.ytdPY),
+    variancePct(n.ytd, n.ytdPY),
   ]);
 
   return XLSX.utils.aoa_to_sheet(data);
@@ -627,13 +503,13 @@ export function generateReport(input: ReportGenerationInput): Buffer {
 
   switch (reportType) {
     case "cm-vs-pm":
-      ws = buildDetailSheet(parsedFiles, "period");
+      ws = renderDetailPnL(aggregatePnL(parsedFiles, groups, mappings), parsedFiles.consolidatedPnL, "period");
       break;
     case "cy-vs-py":
-      ws = buildDetailSheet(parsedFiles, "ytd");
+      ws = renderDetailPnL(aggregatePnL(parsedFiles, groups, mappings), parsedFiles.consolidatedPnL, "ytd");
       break;
     case "summary-pnl":
-      ws = buildSummaryPnLSheet(parsedFiles, groups, mappings);
+      ws = renderSummaryPnL(aggregatePnL(parsedFiles, groups, mappings), parsedFiles.consolidatedPnL);
       break;
     case "balance-sheet":
       ws = buildBalanceSheetSheet(parsedFiles, groups, mappings);

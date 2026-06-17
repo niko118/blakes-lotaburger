@@ -74,13 +74,13 @@ const REPORTS: ReportDefinition[] = [
     type: "cm-vs-pm",
     name: "CM vs PM Detail",
     desc: "Current period vs prior year period, full account breakdown",
-    requiresMapping: false,
+    requiresMapping: true,
   },
   {
     type: "cy-vs-py",
     name: "CY vs PY Detail",
     desc: "Current YTD vs prior year YTD, full account breakdown",
-    requiresMapping: false,
+    requiresMapping: true,
   },
   {
     type: "summary-pnl",
