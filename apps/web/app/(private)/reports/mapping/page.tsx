@@ -20,6 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@components/ui/tooltip";
 import { fetchGraphQL } from "@lib/graphql/client";
 import type { ReportGroup, AccountMapping } from "@app-types";
 
@@ -116,16 +121,17 @@ const styles = {
   ignoredBadge: "flex items-center gap-1.5 text-sm font-medium text-silver",
 
   tableWrapper: "border border-cloud rounded-lg overflow-hidden",
-  tableHeader: "grid grid-cols-[1fr_220px_140px_auto] gap-0 bg-fog border-b border-cloud",
+  tableHeader: "grid grid-cols-[1.6fr_minmax(220px,1fr)_104px_80px] gap-0 bg-fog border-b border-cloud",
   tableHeaderCell: "px-4 py-3 text-xs font-semibold text-silver uppercase tracking-wide",
-  tableRow: "grid grid-cols-[1fr_220px_140px_auto] gap-0 border-b border-cloud last:border-b-0 hover:bg-fog/50 transition-colors",
+  tableHeaderCellTight: "px-2 py-3 text-xs font-semibold text-silver uppercase tracking-wide",
+  tableRow: "grid grid-cols-[1.6fr_minmax(220px,1fr)_104px_80px] gap-0 border-b border-cloud last:border-b-0 hover:bg-fog/50 transition-colors",
   tableRowUnmapped: "bg-yellow/3",
-  tableCellAccount: "px-4 py-3 text-sm text-steel font-mono truncate self-center",
-  tableCellGroup: "px-4 py-3 self-center",
-  tableCellStatus: "px-4 py-3 self-center",
-  tableCellActions: "px-4 py-3 self-center",
+  tableCellAccount: "px-4 py-3 text-xs text-steel font-mono truncate self-center min-w-0",
+  tableCellGroup: "px-4 py-3 self-center min-w-0",
+  tableCellStatus: "px-2 py-3 self-center",
+  tableCellActions: "px-2 py-3 self-center",
 
-  groupSelect: "h-8 text-sm min-w-0",
+  groupSelect: "h-8 text-sm w-full min-w-0",
   statusBadge: "inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full",
   statusUnmapped: "bg-yellow/10 text-yellow border border-yellow/20",
   statusMapped: "bg-green/10 text-green border border-green/20",
@@ -274,14 +280,26 @@ export default function AccountMappingPage() {
   useEffect(() => { loadAll(); }, []);
 
   const allLeafGroups = useMemo(() => {
-    const flat: { id: string; label: string; reportType: string }[] = [];
+    const flat: { id: string; label: string; leaf: string; reportType: string }[] = [];
     for (const section of groups) {
       for (const child of section.children) {
-        flat.push({ id: child.id, label: `${section.name} → ${child.name}`, reportType: section.reportType });
+        flat.push({
+          id: child.id,
+          label: `${section.name} → ${child.name}`,
+          leaf: child.name,
+          reportType: section.reportType,
+        });
       }
     }
     return flat;
   }, [groups]);
+
+  // Lookup by id for rendering the selected group's leaf name + full-path tooltip
+  // in each row's trigger without re-deriving it per render.
+  const groupById = useMemo(
+    () => new Map(allLeafGroups.map((g) => [g.id, g])),
+    [allLeafGroups]
+  );
 
   const stats = useMemo(() => {
     const total = mappings.length;
@@ -452,8 +470,8 @@ export default function AccountMappingPage() {
             <div className={styles.tableHeader}>
               <div className={styles.tableHeaderCell}>Account Name</div>
               <div className={styles.tableHeaderCell}>Assigned Group</div>
-              <div className={styles.tableHeaderCell}>Status</div>
-              <div className={styles.tableHeaderCell}>Actions</div>
+              <div className={styles.tableHeaderCellTight}>Status</div>
+              <div className={styles.tableHeaderCellTight}>Actions</div>
             </div>
 
             {filtered.length === 0 ? (
@@ -468,6 +486,8 @@ export default function AccountMappingPage() {
               filtered.map((mapping) => {
                 const isSaving = savingAccount === mapping.accountName;
                 const isUnmapped = !mapping.ignored && mapping.groupId === null;
+                const selectedGroup =
+                  mapping.groupId !== null ? groupById.get(String(mapping.groupId)) : undefined;
 
                 return (
                   <div
@@ -484,9 +504,18 @@ export default function AccountMappingPage() {
                         onValueChange={(v) => handleGroupChange(mapping.accountName, v)}
                         disabled={mapping.ignored || isSaving}
                       >
-                        <SelectTrigger className={styles.groupSelect}>
-                          <SelectValue placeholder="Assign group..." />
-                        </SelectTrigger>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <SelectTrigger className={styles.groupSelect}>
+                              <SelectValue placeholder="Assign group...">
+                                {selectedGroup ? selectedGroup.leaf : "— Unassigned —"}
+                              </SelectValue>
+                            </SelectTrigger>
+                          </TooltipTrigger>
+                          {selectedGroup && (
+                            <TooltipContent side="top">{selectedGroup.label}</TooltipContent>
+                          )}
+                        </Tooltip>
                         <SelectContent>
                           <SelectItem value="__unassigned__">— Unassigned —</SelectItem>
                           {availableGroups.map((g) => (
@@ -520,16 +549,22 @@ export default function AccountMappingPage() {
                     </div>
 
                     <div className={styles.tableCellActions}>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={isSaving}
-                        onClick={() => handleIgnoreToggle(mapping)}
-                        title={mapping.ignored ? "Un-ignore this account" : "Ignore this account"}
-                      >
-                        <EyeOff className={styles.ignoreIcon} />
-                        {mapping.ignored ? "Un-ignore" : "Ignore"}
-                      </Button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            disabled={isSaving}
+                            onClick={() => handleIgnoreToggle(mapping)}
+                            aria-label={mapping.ignored ? "Un-ignore this account" : "Ignore this account"}
+                          >
+                            <EyeOff className={styles.ignoreIcon} />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          {mapping.ignored ? "Un-ignore" : "Ignore"}
+                        </TooltipContent>
+                      </Tooltip>
                     </div>
                   </div>
                 );
