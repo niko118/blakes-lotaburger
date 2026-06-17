@@ -21,13 +21,16 @@ const db = drizzle(client);
 // Operating / Marketing / G&A / R&M; "Corporate Overhead" wraps the corporate
 // office, interest and other-income groups — matching the workbook's totals
 // (Total Operating Expense, Total Corporate Overhead, etc.).
+// contributesAs drives the Net Income sign (revenue adds, cost subtracts).
+// eliminateCommissary marks the sections that net out the commissary
+// intercompany (commissary total sales) — Sales and Food Cost.
 const PNL_SECTIONS = [
-  { name: "Sales", sortOrder: 10 },
-  { name: "Food Cost", sortOrder: 20 },
-  { name: "Labor Cost", sortOrder: 30 },
-  { name: "Operating Expense", sortOrder: 40 },
-  { name: "Non Controllable Expense", sortOrder: 50 },
-  { name: "Corporate Overhead", sortOrder: 60 },
+  { name: "Sales", sortOrder: 10, contributesAs: "revenue", eliminateCommissary: true },
+  { name: "Food Cost", sortOrder: 20, contributesAs: "cost", eliminateCommissary: true },
+  { name: "Labor Cost", sortOrder: 30, contributesAs: "cost", eliminateCommissary: false },
+  { name: "Operating Expense", sortOrder: 40, contributesAs: "cost", eliminateCommissary: false },
+  { name: "Non Controllable Expense", sortOrder: 50, contributesAs: "cost", eliminateCommissary: false },
+  { name: "Corporate Overhead", sortOrder: 60, contributesAs: "cost", eliminateCommissary: false },
 ] as const;
 
 // [sectionName, groupName, sortOrder]
@@ -519,7 +522,14 @@ async function seed() {
     for (const section of PNL_SECTIONS) {
       const [row] = await tx
         .insert(reportGroups)
-        .values({ name: section.name, parentId: null, reportType: "pnl", sortOrder: section.sortOrder })
+        .values({
+          name: section.name,
+          parentId: null,
+          reportType: "pnl",
+          sortOrder: section.sortOrder,
+          contributesAs: section.contributesAs,
+          eliminateCommissary: section.eliminateCommissary,
+        })
         .returning({ id: reportGroups.id });
       pnlSectionIds[section.name] = row.id;
     }

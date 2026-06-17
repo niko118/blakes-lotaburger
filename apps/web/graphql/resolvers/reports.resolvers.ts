@@ -74,7 +74,7 @@ export const reportsResolvers = {
   Mutation: {
     createReportGroup: async (
       _: unknown,
-      { input }: { input: { name: string; parentId?: number | null; reportType: string; sortOrder?: number | null; subtotalAfter?: boolean } },
+      { input }: { input: { name: string; parentId?: number | null; reportType: string; sortOrder?: number | null; subtotalAfter?: boolean; contributesAs?: string | null; eliminateCommissary?: boolean } },
       ctx: Context
     ) => {
       ctx.session;
@@ -100,6 +100,8 @@ export const reportsResolvers = {
           reportType: input.reportType,
           sortOrder,
           subtotalAfter: input.subtotalAfter ?? false,
+          contributesAs: input.contributesAs ?? null,
+          eliminateCommissary: input.eliminateCommissary ?? false,
         })
         .returning();
       return created;
@@ -107,7 +109,7 @@ export const reportsResolvers = {
 
     updateReportGroup: async (
       _: unknown,
-      { id, input }: { id: string; input: { name?: string; parentId?: number | null; sortOrder?: number; subtotalAfter?: boolean } },
+      { id, input }: { id: string; input: { name?: string; parentId?: number | null; sortOrder?: number; subtotalAfter?: boolean; contributesAs?: string | null; eliminateCommissary?: boolean } },
       ctx: Context
     ) => {
       ctx.session;
@@ -116,6 +118,8 @@ export const reportsResolvers = {
       if (input.parentId !== undefined) patch.parentId = input.parentId;
       if (input.sortOrder !== undefined) patch.sortOrder = input.sortOrder;
       if (input.subtotalAfter !== undefined) patch.subtotalAfter = input.subtotalAfter;
+      if (input.contributesAs !== undefined) patch.contributesAs = input.contributesAs;
+      if (input.eliminateCommissary !== undefined) patch.eliminateCommissary = input.eliminateCommissary;
 
       const [updated] = await db
         .update(reportGroups)

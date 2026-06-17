@@ -30,6 +30,7 @@ import {
   X,
   Check,
   Sigma,
+  Scissors,
   GripVertical,
 } from "lucide-react";
 import { Card } from "@components/ui/card";
@@ -45,8 +46,8 @@ import type { ReportGroup } from "@app-types";
 const QUERY_REPORT_GROUPS = /* GraphQL */ `
   query ReportGroups($reportType: String) {
     reportGroups(reportType: $reportType) {
-      id name parentId reportType sortOrder subtotalAfter
-      children { id name parentId reportType sortOrder subtotalAfter }
+      id name parentId reportType sortOrder subtotalAfter contributesAs eliminateCommissary
+      children { id name parentId reportType sortOrder subtotalAfter contributesAs eliminateCommissary }
     }
   }
 `;
@@ -59,7 +60,9 @@ const MUTATION_CREATE_GROUP = /* GraphQL */ `
 
 const MUTATION_UPDATE_GROUP = /* GraphQL */ `
   mutation UpdateReportGroup($id: ID!, $input: UpdateReportGroupInput!) {
-    updateReportGroup(id: $id, input: $input) { id name subtotalAfter }
+    updateReportGroup(id: $id, input: $input) {
+      id name subtotalAfter contributesAs eliminateCommissary
+    }
   }
 `;
 
@@ -113,6 +116,14 @@ const styles = {
 
   subtotalBadge: "inline-flex items-center gap-1 text-xs font-medium text-primary",
   subtotalIcon: "h-3 w-3",
+
+  // P&L section flag chips (contributesAs / eliminateCommissary)
+  flagChip: "inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-semibold uppercase tracking-wide leading-none transition-colors",
+  flagChipRevenue: "bg-green/10 text-green hover:bg-green/20",
+  flagChipCost: "bg-fog text-dark-grey hover:bg-cloud",
+  flagChipOn: "bg-primary/10 text-primary hover:bg-primary/20",
+  flagChipOff: "bg-transparent text-rain hover:bg-fog hover:text-dark-grey",
+  flagChipIcon: "h-2.5 w-2.5",
 
   inlineEditRow: "flex items-center gap-1 px-2 py-1",
   inlineEditInput: "h-7 text-sm flex-1",
@@ -246,14 +257,18 @@ interface SortableSectionProps {
   onCancelEdit: () => void;
   onAddGroup: (sectionId: string) => void;
   onDelete: (id: string, label: string) => void;
+  onCycleContributes: (section: ReportGroup) => void;
+  onToggleEliminate: (section: ReportGroup) => void;
   saving: boolean;
   hasGroups: boolean;
 }
 
 function SortableSection({
   section, children, editing, editingName, onEditingNameChange,
-  onStartEdit, onSaveEdit, onCancelEdit, onAddGroup, onDelete, saving, hasGroups,
+  onStartEdit, onSaveEdit, onCancelEdit, onAddGroup, onDelete,
+  onCycleContributes, onToggleEliminate, saving, hasGroups,
 }: SortableSectionProps) {
+  const isPnl = section.reportType === "pnl";
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: section.id,
     data: { type: "section" },
@@ -289,6 +304,23 @@ function SortableSection({
             <GripVertical className={styles.handleIcon} />
           </span>
           <span className={styles.treeSectionName}>{section.name}</span>
+          {isPnl && (
+            <button
+              className={`${styles.flagChip} ${section.contributesAs === "revenue" ? styles.flagChipRevenue : styles.flagChipCost}`}
+              onClick={() => onCycleContributes(section)}
+              title="Net Income sign — revenue is added, cost is subtracted. Click to switch.">
+              {section.contributesAs === "revenue" ? "Revenue" : "Cost"}
+            </button>
+          )}
+          {isPnl && (
+            <button
+              className={`${styles.flagChip} ${section.eliminateCommissary ? styles.flagChipOn : styles.flagChipOff}`}
+              onClick={() => onToggleEliminate(section)}
+              title="Commissary elimination — nets the commissary intercompany (commissary total sales) out of this section. Click to toggle (on for Sales and Food Cost).">
+              <Scissors className={styles.flagChipIcon} />
+              Commissary
+            </button>
+          )}
           <div className={styles.treeActions}>
             <Button size="sm" variant="ghost" className={styles.iconBtn}
               onClick={() => onAddGroup(section.id)} title="Add group">
@@ -347,6 +379,12 @@ function StructurePreview({ sections, reportType }: { sections: ReportGroup[]; r
                     )}
                   </div>
                 ))}
+                {section.eliminateCommissary && (
+                  <div className={styles.previewGroup}>
+                    <span className={styles.previewLineLabel}>Commissary Elimination</span>
+                    <span className={styles.previewSubtotalTag}>commissary</span>
+                  </div>
+                )}
                 <div className={styles.previewSectionTotal}>
                   <span className={styles.previewLineLabel}>Total {section.name}</span>
                 </div>
@@ -438,6 +476,29 @@ export default function ReportStructurePage() {
     setSaving(true);
     try {
       await fetchGraphQL(MUTATION_UPDATE_GROUP, { id: group.id, input: { subtotalAfter: !group.subtotalAfter } });
+      await loadGroups();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Cycle a P&L section between revenue and cost (Net Income sign).
+  const cycleContributes = async (section: ReportGroup) => {
+    const next = section.contributesAs === "revenue" ? "cost" : "revenue";
+    setSaving(true);
+    try {
+      await fetchGraphQL(MUTATION_UPDATE_GROUP, { id: section.id, input: { contributesAs: next } });
+      await loadGroups();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Toggle whether a P&L section nets out the commissary intercompany.
+  const toggleEliminate = async (section: ReportGroup) => {
+    setSaving(true);
+    try {
+      await fetchGraphQL(MUTATION_UPDATE_GROUP, { id: section.id, input: { eliminateCommissary: !section.eliminateCommissary } });
       await loadGroups();
     } finally {
       setSaving(false);
@@ -664,6 +725,8 @@ export default function ReportStructurePage() {
                     onCancelEdit={cancelEdit}
                     onAddGroup={(id) => { setAddingChildOf(id); setAddingSection(false); setNewName(""); }}
                     onDelete={remove}
+                    onCycleContributes={cycleContributes}
+                    onToggleEliminate={toggleEliminate}
                     saving={saving}
                     hasGroups={section.children.length > 0}
                   >

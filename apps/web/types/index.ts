@@ -53,6 +53,8 @@ export interface ReportGroup {
   reportType: string;
   sortOrder: number;
   subtotalAfter: boolean;
+  contributesAs: string | null; // 'revenue' | 'cost' | null (P&L sections only)
+  eliminateCommissary: boolean;
   children: ReportGroup[];
 }
 

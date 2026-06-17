@@ -69,6 +69,8 @@ export const typeDefs = /* GraphQL */ `
     reportType: String!
     sortOrder: Int!
     subtotalAfter: Boolean!
+    contributesAs: String
+    eliminateCommissary: Boolean!
     children: [ReportGroup!]!
   }
 
@@ -101,6 +103,8 @@ export const typeDefs = /* GraphQL */ `
     reportType: String!
     sortOrder: Int
     subtotalAfter: Boolean
+    contributesAs: String
+    eliminateCommissary: Boolean
   }
 
   input UpdateReportGroupInput {
@@ -108,6 +112,8 @@ export const typeDefs = /* GraphQL */ `
     parentId: Int
     sortOrder: Int
     subtotalAfter: Boolean
+    contributesAs: String
+    eliminateCommissary: Boolean
   }
 
   # Used to persist drag-and-drop reordering and cross-section moves.

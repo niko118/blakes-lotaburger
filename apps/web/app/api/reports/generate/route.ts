@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
 
   try {
     // Load groups and mappings from DB for summary reports
-    let groups: { id: number; name: string; parentId: number | null; reportType: string; sortOrder: number; subtotalAfter: boolean }[] = [];
+    let groups: { id: number; name: string; parentId: number | null; reportType: string; sortOrder: number; subtotalAfter: boolean; contributesAs: string | null; eliminateCommissary: boolean }[] = [];
     let mappings: { accountName: string; groupId: number | null; ignored: boolean }[] = [];
 
     if (reportType === "summary-pnl" || reportType === "balance-sheet") {

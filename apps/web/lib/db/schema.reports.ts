@@ -25,6 +25,13 @@ export const reportGroups = pgTable(
     // accumulated up to and including this group (e.g. "Total Food Cost" for
     // raw food only, before Beverage Cost and Freight are added).
     subtotalAfter: boolean("subtotal_after").notNull().default(false),
+    // P&L net-income sign. Set on top-level sections only: 'revenue' sections
+    // are added, 'cost' sections are subtracted, when computing Net Income.
+    // Null for Balance Sheet sections and for child groups.
+    contributesAs: varchar("contributes_as", { length: 20 }), // 'revenue' | 'cost' | null
+    // When true, the section nets out the commissary intercompany amount
+    // (commissary total sales) — true on the Sales and Food Cost sections.
+    eliminateCommissary: boolean("eliminate_commissary").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

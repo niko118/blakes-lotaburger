@@ -14,6 +14,10 @@ interface DbGroup {
   reportType: string;
   sortOrder: number;
   subtotalAfter: boolean;
+  // P&L net-income sign on top-level sections: 'revenue' adds, 'cost' subtracts.
+  contributesAs?: string | null;
+  // When true, the section nets out the commissary intercompany (total sales).
+  eliminateCommissary?: boolean;
 }
 
 interface DbMapping {
@@ -72,7 +76,10 @@ function groupPnLBySections(rows: PnLRow[]): Section[] {
   return sections;
 }
 
-// Compute commissary intercompany elimination for a given value getter
+// LEGACY — used only by the detail reports (buildDetailSheet), which are
+// pending a refactor to the seed-driven engine. Do NOT use for new code.
+// The workbook's actual elimination is commissary total SALES (see
+// commissarySalesTotal), not sales − food cost.
 function computeElimination(
   commissaryPnL: ParsedPnL,
   getValue: (row: PnLRow) => number | null
@@ -96,8 +103,31 @@ function computeElimination(
     }
   }
 
-  // Elimination = Net commissary profit eliminated from consolidated food cost
   return totalSales - totalFoodCost;
+}
+
+// Commissary intercompany elimination amount, fully data-driven: the sum of the
+// commissary P&L's revenue accounts — identified via the account mapping
+// (accounts mapped to a group whose section is flagged contributesAs='revenue').
+// This is the amount the workbook nets out of BOTH Total Sales and Total Food
+// Cost, so the consolidated view excludes the commissary→stores transfer.
+function commissarySalesTotal(
+  commissaryPnL: ParsedPnL,
+  mappingMap: Map<string, number | null>,
+  ignoredSet: Set<string>,
+  revenueGroupIds: Set<number>,
+  getValue: (row: PnLRow) => number | null
+): number {
+  let total = 0;
+  for (const row of commissaryPnL.rows) {
+    if (row.isSectionHeader || row.isTotal) continue;
+    if (ignoredSet.has(row.name)) continue;
+    const groupId = mappingMap.get(row.name);
+    if (groupId && revenueGroupIds.has(groupId)) {
+      total += getValue(row) ?? 0;
+    }
+  }
+  return total;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -256,11 +286,21 @@ function buildSummaryPnLSheet(
     });
   }
 
-  // Compute commissary elimination (both period and YTD)
-  const periodElim = computeElimination(commissaryPnL, (r) => r.periodActual);
-  const ytdElim = computeElimination(commissaryPnL, (r) => r.ytdActual);
+  // Group ids whose parent section is flagged as revenue — used to identify
+  // commissary revenue accounts for the intercompany elimination.
+  const revenueSectionIds = new Set(
+    sections.filter((s) => s.contributesAs === "revenue").map((s) => s.id)
+  );
+  const revenueGroupIds = new Set(
+    pnlGroups.filter((g) => g.parentId !== null && revenueSectionIds.has(g.parentId)).map((g) => g.id)
+  );
 
-  // Find "Total Sales" period values to compute % of sales
+  // Commissary intercompany elimination = commissary total sales (period & YTD).
+  // Netted out of BOTH the Sales and Food Cost sections (flagged eliminateCommissary).
+  const periodElim = commissarySalesTotal(commissaryPnL, mappingMap, ignoredSet, revenueGroupIds, (r) => r.periodActual);
+  const ytdElim = commissarySalesTotal(commissaryPnL, mappingMap, ignoredSet, revenueGroupIds, (r) => r.ytdActual);
+
+  // Sales base for "% of sales" (net revenue-section totals)
   let totalSalesPeriod = 0;
   let totalSalesYTD = 0;
 
@@ -287,15 +327,21 @@ function buildSummaryPnLSheet(
     "% Var",
   ]);
 
-  let grandPeriod = 0;
-  let grandPeriodPY = 0;
-  let grandYTD = 0;
-  let grandYTDPY = 0;
+  // Net income is accumulated by sign: revenue sections add, cost sections
+  // subtract. Driven by the section's contributesAs flag (no name matching).
+  let revenuePeriod = 0;
+  let revenuePeriodPY = 0;
+  let revenueYTD = 0;
+  let revenueYTDPY = 0;
+  let costPeriod = 0;
+  let costPeriodPY = 0;
+  let costYTD = 0;
+  let costYTDPY = 0;
 
   for (const section of sections) {
     const children = (childrenByParent.get(section.id) ?? []).sort((a, b) => a.sortOrder - b.sortOrder);
-    const isSalesSection = section.name.toLowerCase().includes("sale");
-    const isFoodSection = section.name.toLowerCase().includes("food") || section.name.toLowerCase().includes("cost of food");
+    const isRevenueSection = section.contributesAs === "revenue";
+    const applyElim = section.eliminateCommissary === true;
 
     let sectionPeriod = 0;
     let sectionPeriodPY = 0;
@@ -358,8 +404,9 @@ function buildSummaryPnLSheet(
       }
     }
 
-    // Apply commissary elimination to food cost section
-    if (isFoodSection && (periodElim !== 0 || ytdElim !== 0)) {
+    // Apply commissary elimination to every flagged section (Sales and Food
+    // Cost). The same amount (commissary total sales) is netted out of both.
+    if (applyElim && (periodElim !== 0 || ytdElim !== 0)) {
       sectionPeriod += -periodElim;
       sectionYTD += -ytdElim;
       data.push([
@@ -372,10 +419,10 @@ function buildSummaryPnLSheet(
       ]);
     }
 
-    // Section total
-    if (isSalesSection) {
-      totalSalesPeriod = sectionPeriod;
-      totalSalesYTD = sectionYTD;
+    // Section total. Revenue section establishes the "% of sales" base.
+    if (isRevenueSection) {
+      totalSalesPeriod += sectionPeriod;
+      totalSalesYTD += sectionYTD;
     }
 
     const pSecVar = variance(sectionPeriod, sectionPeriodPY);
@@ -398,28 +445,40 @@ function buildSummaryPnLSheet(
     ]);
     data.push([]);
 
-    grandPeriod += sectionPeriod;
-    grandPeriodPY += sectionPeriodPY;
-    grandYTD += sectionYTD;
-    grandYTDPY += sectionYTDPY;
+    if (isRevenueSection) {
+      revenuePeriod += sectionPeriod;
+      revenuePeriodPY += sectionPeriodPY;
+      revenueYTD += sectionYTD;
+      revenueYTDPY += sectionYTDPY;
+    } else {
+      costPeriod += sectionPeriod;
+      costPeriodPY += sectionPeriodPY;
+      costYTD += sectionYTD;
+      costYTDPY += sectionYTDPY;
+    }
   }
 
-  const gPVar = variance(grandPeriod, grandPeriodPY);
-  const gYVar = variance(grandYTD, grandYTDPY);
+  // Net Income = revenue − costs (subtracting cost sections regardless of sign;
+  // a net-income section like Corporate Overhead that is negative adds back).
+  const netPeriod = revenuePeriod - costPeriod;
+  const netPeriodPY = revenuePeriodPY - costPeriodPY;
+  const netYTD = revenueYTD - costYTD;
+  const netYTDPY = revenueYTDPY - costYTDPY;
+
   data.push([
     "NET INCOME / (LOSS)",
-    grandPeriod || null,
-    pct(grandPeriod, totalSalesPeriod),
-    grandPeriodPY || null,
-    pct(grandPeriodPY, totalSalesPeriod),
-    gPVar,
-    variancePct(grandPeriod, grandPeriodPY),
-    grandYTD || null,
-    pct(grandYTD, totalSalesYTD),
-    grandYTDPY || null,
-    pct(grandYTDPY, totalSalesYTD),
-    gYVar,
-    variancePct(grandYTD, grandYTDPY),
+    netPeriod || null,
+    pct(netPeriod, totalSalesPeriod),
+    netPeriodPY || null,
+    pct(netPeriodPY, totalSalesPeriod),
+    variance(netPeriod, netPeriodPY),
+    variancePct(netPeriod, netPeriodPY),
+    netYTD || null,
+    pct(netYTD, totalSalesYTD),
+    netYTDPY || null,
+    pct(netYTDPY, totalSalesYTD),
+    variance(netYTD, netYTDPY),
+    variancePct(netYTD, netYTDPY),
   ]);
 
   return XLSX.utils.aoa_to_sheet(data);
