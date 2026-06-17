@@ -23,6 +23,10 @@ import {
   Users,
   Settings,
   ShieldCheck,
+  BarChart2,
+  Upload,
+  Layers,
+  ListTree,
   type LucideIcon,
 } from "lucide-react";
 
@@ -35,7 +39,11 @@ export type IconName =
   | "LayoutDashboard"
   | "Users"
   | "Settings"
-  | "ShieldCheck";
+  | "ShieldCheck"
+  | "BarChart2"
+  | "Upload"
+  | "Layers"
+  | "ListTree";
 
 const iconMap: Record<IconName, LucideIcon> = {
   Home,
@@ -47,6 +55,10 @@ const iconMap: Record<IconName, LucideIcon> = {
   Users,
   Settings,
   ShieldCheck,
+  BarChart2,
+  Upload,
+  Layers,
+  ListTree,
 };
 
 const DEFAULT_ICON = LayoutDashboard;

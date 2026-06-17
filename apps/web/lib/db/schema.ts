@@ -51,3 +51,6 @@ export type NewApiCredential = typeof apiCredentials.$inferInsert;
 
 // Re-export auth schema
 export * from "./schema.auth";
+
+// Re-export reports schema
+export * from "./schema.reports";

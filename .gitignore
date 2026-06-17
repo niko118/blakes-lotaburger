@@ -11,8 +11,6 @@ Example Files/*
 .env
 .env.local
 .env.*.local
-.env.example
-env.example
 apps/*/.env
 apps/*/.env.local
 apps/*/.env.*.local

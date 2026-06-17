@@ -12,6 +12,8 @@ These rules apply repo-wide. If a subfolder needs different guidance later, it m
 - Do what is asked, but check related files to ensure consistency.
 - If you see issues or improvements beyond the request, mention them but don't implement unless asked.
 - When in doubt about scope or approach, ask clarifying questions.
+- **Commit messages must NOT include `Co-Authored-By: Claude` or any AI authorship trailer.**
+- **Conversation language:** If the user writes in Spanish, respond in Spanish. All code and content must still be in English.
 
 ## Language Policy
 
@@ -24,15 +26,9 @@ All technical content MUST be in English:
 - PR descriptions and issue comments
 - Code review feedback
 
-**Exceptions:**
-
-- User-facing UI text (labels, error messages) can be in Spanish
-- Business domain terms that are Spanish-specific (add English comment explaining the term)
-- SQL comments intended for business users may be in Spanish (but technical SQL comments should be in English)
-
 **Enforcement:**
 
-AI will write all new code in English and flag Spanish content in code reviews. This ensures maintainability, global collaboration, and consistency with industry standards.
+Everything must be 100% in English — including all user-facing UI text (labels, error messages, placeholders). AI may respond in Spanish when spoken to in Spanish, but all code and content must be in English.
 
 ## Code Quality & Maintainability
 

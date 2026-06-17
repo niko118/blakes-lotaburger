@@ -1,0 +1,1 @@
+ALTER TABLE "report_groups" ADD COLUMN "subtotal_after" boolean DEFAULT false NOT NULL;

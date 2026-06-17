@@ -34,6 +34,30 @@ export const navigation: NavItem[] = [
     href: "/dashboard",
   },
   {
+    name: "Reports",
+    icon: "BarChart2",
+    description: "Financial reports for the period",
+    children: [
+      {
+        name: "Upload Files",
+        href: "/reports/upload",
+        icon: "Upload",
+      },
+      {
+        name: "Account Mapping",
+        href: "/reports/mapping",
+        icon: "Layers",
+        requiredPermission: "reports.manage",
+      },
+      {
+        name: "Report Structure",
+        href: "/reports/structure",
+        icon: "ListTree",
+        requiredPermission: "reports.manage",
+      },
+    ],
+  },
+  {
     name: "Access Management",
     icon: "Shield",
     description: "Manage users, roles and permissions",

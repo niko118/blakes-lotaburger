@@ -1,0 +1,1 @@
+ALTER TABLE "account_mappings" ADD COLUMN "report_type" varchar(20);

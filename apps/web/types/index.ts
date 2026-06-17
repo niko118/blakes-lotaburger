@@ -43,6 +43,36 @@ export interface ChangePasswordResult {
 }
 
 // ============================================================================
+// Reports Types
+// ============================================================================
+
+export interface ReportGroup {
+  id: string;
+  name: string;
+  parentId: number | null;
+  reportType: string;
+  sortOrder: number;
+  subtotalAfter: boolean;
+  children: ReportGroup[];
+}
+
+export interface AccountMapping {
+  id: string;
+  accountName: string;
+  groupId: number | null;
+  group: ReportGroup | null;
+  reportType: string | null;
+  ignored: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountMappingCheckResult {
+  unmappedAccounts: string[];
+  totalChecked: number;
+}
+
+// ============================================================================
 // API Credentials Types (for external API integrations)
 // ============================================================================
 

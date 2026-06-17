@@ -46,6 +46,13 @@ export const PERMISSIONS_CATALOG: PermissionDefinition[] = [
     category: "Dashboard",
     description: "View main dashboard",
   },
+
+  // Financial Reports
+  {
+    key: "reports.manage",
+    category: "Financial Reports",
+    description: "Manage account mappings for financial reports",
+  },
 ];
 
 /**
