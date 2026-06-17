@@ -3,8 +3,9 @@ name: Deploy to PROD
 on:
   push:
     branches:
+      - main
       - master
-  
+
   # Allow manual trigger
   workflow_dispatch:
 
