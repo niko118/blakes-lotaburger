@@ -1,4 +1,4 @@
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
 import type { ParsedFiles, ParsedPnL, PnLRow } from "./types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,9 +53,87 @@ function variancePct(current: number | null, prior: number | null): string {
   return `${((v / Math.abs(prior)) * 100).toFixed(1)}%`;
 }
 
-// Build a worksheet from an array-of-arrays and auto-size every column to its
-// widest cell (so the file opens readable instead of all columns equal width).
-// Numbers are measured at their displayed, thousands-separated length.
+// ─────────────────────────────────────────────────────────────────────────────
+// Worksheet styling — shared by all 4 reports. Every renderer emits the same
+// array-of-arrays shape with consistent label conventions, so a single styler
+// can classify each row and apply brand formatting without the renderers
+// knowing anything about presentation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Brand palette (from globals.css), as Excel ARGB-less hex strings.
+const COLORS = {
+  steel: "3D423B",
+  cloud: "E4E7E2",
+  fog: "F7F9F6",
+  white: "FFFFFF",
+  silver: "6E746C",
+  primary: "6366F1",
+  green: "16A34A",
+  red: "DC2626",
+} as const;
+
+// Accounting number format: thousands separators, negatives in red parentheses.
+const NUM_FMT = "#,##0.00;[Red](#,##0.00)";
+
+type RowClass =
+  | "title" | "meta" | "header" | "section"
+  | "total" | "grandtotal" | "check" | "detail" | "blank";
+
+// Grand totals get the strongest emphasis (accent fill, white text).
+const GRAND_TOTAL_LABELS = new Set([
+  "NET INCOME / (LOSS)",
+  "Total Assets",
+  "Total Liabilities & Equity",
+  "TOTAL",
+]);
+
+// Classify a row purely from its first cell + shape. Renderer label conventions:
+// row 0 is the title; meta rows precede the header; section headers are the only
+// UPPERCASE labels with no values; detail rows are indented with two spaces;
+// subtotals/totals start with "Total "; the balance check starts with "Balance".
+function classifyRow(row: (string | number | null)[], rowIndex: number, headerRowIndex: number): RowClass {
+  const first = row[0];
+  if (rowIndex === 0) return "title";
+  if (first === null || first === undefined || first === "") return "blank";
+  if (rowIndex === headerRowIndex) return "header";
+  if (headerRowIndex > 0 && rowIndex < headerRowIndex) return "meta";
+
+  const label = String(first);
+  if (label.startsWith("Balance Check")) return "check";
+  if (GRAND_TOTAL_LABELS.has(label)) return "grandtotal";
+  if (label.startsWith("Total ")) return "total";
+  // Section header: uppercase label with no values in the rest of the row.
+  const restEmpty = row.slice(1).every((c) => c === null || c === undefined || c === "");
+  if (restEmpty && label === label.toUpperCase()) return "section";
+  return "detail";
+}
+
+const solidFill = (rgb: string) => ({ patternType: "solid", fgColor: { rgb } });
+const topBorder = { top: { style: "thin", color: { rgb: COLORS.steel } } };
+const topBottomBorder = {
+  top: { style: "thin", color: { rgb: COLORS.steel } },
+  bottom: { style: "thin", color: { rgb: COLORS.steel } },
+};
+
+// Per-class cell style fragments (font / fill / border). Alignment and number
+// format are applied separately per cell based on its value type.
+const ROW_STYLE: Partial<Record<RowClass, Record<string, unknown>>> = {
+  title: { font: { bold: true, sz: 14, color: { rgb: COLORS.steel } } },
+  meta: { font: { italic: true, sz: 10, color: { rgb: COLORS.silver } } },
+  header: { font: { bold: true, color: { rgb: COLORS.white } }, fill: solidFill(COLORS.steel) },
+  section: { font: { bold: true, color: { rgb: COLORS.steel } }, fill: solidFill(COLORS.cloud) },
+  total: { font: { bold: true, color: { rgb: COLORS.steel } }, fill: solidFill(COLORS.fog), border: topBorder },
+  grandtotal: { font: { bold: true, color: { rgb: COLORS.white } }, fill: solidFill(COLORS.primary), border: topBottomBorder },
+  check: { font: { bold: true }, fill: solidFill(COLORS.fog) },
+};
+
+// Classes whose fill must span the full table width — empty cells are created so
+// the background color does not stop at the first (only populated) cell.
+const FULL_WIDTH_FILL = new Set<RowClass>(["header", "section", "total", "grandtotal", "check"]);
+
+// Build a worksheet from an array-of-arrays: auto-size every column to its widest
+// cell, then apply brand styling (bold/fills/borders), accounting number format,
+// and right-alignment to numeric and percentage columns.
 function sheetWithAutoWidth(data: (string | number | null)[][]): XLSX.WorkSheet {
   const widths: number[] = [];
   for (const row of data) {
@@ -67,9 +145,44 @@ function sheetWithAutoWidth(data: (string | number | null)[][]): XLSX.WorkSheet 
       widths[i] = Math.max(widths[i] ?? 0, len);
     });
   }
+
   const ws = XLSX.utils.aoa_to_sheet(data);
   // +2 padding; clamp so labels stay readable and number columns don't sprawl.
   ws["!cols"] = widths.map((w) => ({ wch: Math.min(Math.max(w + 2, 10), 60) }));
+
+  const ncols = data.reduce((max, row) => Math.max(max, row.length), 0);
+  const headerRowIndex = data.findIndex((r) => r[0] === "Account Name" || r[0] === "Line Item");
+
+  for (let r = 0; r < data.length; r++) {
+    const cls = classifyRow(data[r], r, headerRowIndex);
+    if (cls === "blank") continue;
+    const classStyle = ROW_STYLE[cls];
+    const cols = FULL_WIDTH_FILL.has(cls) ? ncols : data[r].length;
+
+    for (let c = 0; c < cols; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      // Materialize empty cells on full-width fill rows so the color spans across.
+      const cell = ws[addr] ?? (FULL_WIDTH_FILL.has(cls) ? (ws[addr] = { t: "s", v: "" }) : undefined);
+      if (!cell) continue;
+
+      const isNumber = cell.t === "n";
+      const isPercent = typeof cell.v === "string" && cell.v.endsWith("%");
+
+      const style: Record<string, unknown> = {
+        ...classStyle,
+        // Number format lives inside the style object (xlsx-js-style ignores cell.z
+        // once a style is present); maps to Excel builtin 40.
+        ...(isNumber ? { numFmt: NUM_FMT } : {}),
+        alignment: { horizontal: isNumber || isPercent ? "right" : "left", vertical: "center" },
+      };
+      // Balance check: green when the identity holds (0), red when it drifts.
+      if (cls === "check" && isNumber) {
+        style.font = { bold: true, color: { rgb: cell.v === 0 ? COLORS.green : COLORS.red } };
+      }
+      cell.s = style;
+    }
+  }
+
   return ws;
 }
 
