@@ -53,6 +53,26 @@ function variancePct(current: number | null, prior: number | null): string {
   return `${((v / Math.abs(prior)) * 100).toFixed(1)}%`;
 }
 
+// Build a worksheet from an array-of-arrays and auto-size every column to its
+// widest cell (so the file opens readable instead of all columns equal width).
+// Numbers are measured at their displayed, thousands-separated length.
+function sheetWithAutoWidth(data: (string | number | null)[][]): XLSX.WorkSheet {
+  const widths: number[] = [];
+  for (const row of data) {
+    row.forEach((cell, i) => {
+      let len = 0;
+      if (cell === null || cell === undefined) len = 0;
+      else if (typeof cell === "number") len = cell.toLocaleString("en-US", { maximumFractionDigits: 2 }).length;
+      else len = String(cell).length;
+      widths[i] = Math.max(widths[i] ?? 0, len);
+    });
+  }
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  // +2 padding; clamp so labels stay readable and number columns don't sprawl.
+  ws["!cols"] = widths.map((w) => ({ wch: Math.min(Math.max(w + 2, 10), 60) }));
+  return ws;
+}
+
 // Commissary intercompany elimination amount, fully data-driven: the sum of the
 // commissary P&L's revenue accounts — identified via the account mapping
 // (accounts mapped to a group whose section is flagged contributesAs='revenue').
@@ -234,7 +254,7 @@ function renderDetailPnL(model: PnLModel, meta: ParsedPnL, mode: "period" | "ytd
   }
 
   line("NET INCOME / (LOSS)", model.netIncome);
-  return XLSX.utils.aoa_to_sheet(data);
+  return sheetWithAutoWidth(data);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -357,7 +377,7 @@ function renderSummaryPnL(model: PnLModel, meta: ParsedPnL): XLSX.WorkSheet {
     variancePct(n.ytd, n.ytdPY),
   ]);
 
-  return XLSX.utils.aoa_to_sheet(data);
+  return sheetWithAutoWidth(data);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -512,11 +532,14 @@ function buildBalanceSheetSheet(
       variance(liabEqCY, liabEqPY),
       variancePct(liabEqCY, liabEqPY),
     ]);
-    // Accounting identity check: should be ~0 in both columns.
+    // Accounting identity check: should be 0 in both columns. Round to cents so
+    // floating-point dust (e.g. -1.49e-08) shows as 0.00 instead of in
+    // scientific notation.
+    const roundCents = (n: number) => Math.round(n * 100) / 100;
     data.push([
       "Balance Check (Assets − Liabilities & Equity)",
-      assetsCY - liabEqCY,
-      assetsPY - liabEqPY,
+      roundCents(assetsCY - liabEqCY),
+      roundCents(assetsPY - liabEqPY),
       null,
       null,
     ]);
@@ -530,7 +553,7 @@ function buildBalanceSheetSheet(
     ]);
   }
 
-  return XLSX.utils.aoa_to_sheet(data);
+  return sheetWithAutoWidth(data);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
