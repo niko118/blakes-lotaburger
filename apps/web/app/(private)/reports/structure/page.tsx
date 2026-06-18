@@ -321,6 +321,14 @@ function SortableSection({
               Commissary
             </button>
           )}
+          {!isPnl && (
+            <button
+              className={`${styles.flagChip} ${section.contributesAs === "liability_equity" ? styles.flagChipCost : styles.flagChipRevenue}`}
+              onClick={() => onCycleContributes(section)}
+              title="Balance sheet side — Assets vs Liabilities & Equity. The two sides must be equal. Click to switch.">
+              {section.contributesAs === "liability_equity" ? "Liab & Equity" : "Assets"}
+            </button>
+          )}
           <div className={styles.treeActions}>
             <Button size="sm" variant="ghost" className={styles.iconBtn}
               onClick={() => onAddGroup(section.id)} title="Add group">
@@ -351,7 +359,9 @@ function SortableSection({
 // ─────────────────────────────────────────────────────────────────────────────
 
 function StructurePreview({ sections, reportType }: { sections: ReportGroup[]; reportType: ReportType }) {
-  const grandTotalLabel = reportType === "pnl" ? "NET INCOME / (LOSS)" : "TOTAL";
+  const isBs = reportType === "bs";
+  // BS closes the asset block with "Total Assets" after the last asset section.
+  const lastAssetIdx = isBs ? sections.map((s) => s.contributesAs).lastIndexOf("asset") : -1;
 
   return (
     <Card className={styles.card}>
@@ -363,7 +373,7 @@ function StructurePreview({ sections, reportType }: { sections: ReportGroup[]; r
           <div className={styles.emptyState}>Add sections to see the report layout.</div>
         ) : (
           <>
-            {sections.map((section) => (
+            {sections.map((section, idx) => (
               <div key={section.id}>
                 <div className={styles.previewSectionHeader}>{section.name}</div>
                 {section.children.map((group) => (
@@ -388,9 +398,23 @@ function StructurePreview({ sections, reportType }: { sections: ReportGroup[]; r
                 <div className={styles.previewSectionTotal}>
                   <span className={styles.previewLineLabel}>Total {section.name}</span>
                 </div>
+                {isBs && idx === lastAssetIdx && (
+                  <div className={styles.previewSectionTotal}>
+                    <span className={styles.previewLineLabel}>Total Assets</span>
+                  </div>
+                )}
               </div>
             ))}
-            <div className={styles.previewGrandTotal}>{grandTotalLabel}</div>
+            {isBs ? (
+              <>
+                <div className={styles.previewSectionTotal}>
+                  <span className={styles.previewLineLabel}>Total Liabilities &amp; Equity</span>
+                </div>
+                <div className={styles.previewGrandTotal}>Balance Check (Assets − Liabilities &amp; Equity)</div>
+              </>
+            ) : (
+              <div className={styles.previewGrandTotal}>NET INCOME / (LOSS)</div>
+            )}
           </>
         )}
       </div>
@@ -482,9 +506,13 @@ export default function ReportStructurePage() {
     }
   };
 
-  // Cycle a P&L section between revenue and cost (Net Income sign).
+  // Cycle a section's contributesAs flag. P&L toggles revenue/cost (Net Income
+  // sign); BS toggles asset/liability_equity (which side of the balance sheet).
   const cycleContributes = async (section: ReportGroup) => {
-    const next = section.contributesAs === "revenue" ? "cost" : "revenue";
+    const next =
+      section.reportType === "pnl"
+        ? section.contributesAs === "revenue" ? "cost" : "revenue"
+        : section.contributesAs === "liability_equity" ? "asset" : "liability_equity";
     setSaving(true);
     try {
       await fetchGraphQL(MUTATION_UPDATE_GROUP, { id: section.id, input: { contributesAs: next } });

@@ -420,10 +420,23 @@ function buildBalanceSheetSheet(
   data.push([]);
   data.push(["Line Item", "Current Year", "Prior Year", "$ Variance", "% Variance"]);
 
-  let grandCY = 0;
-  let grandPY = 0;
+  // Balance-sheet sides are data-driven via contributesAs on each section:
+  // 'asset' rolls up to "Total Assets", 'liability_equity' to "Total
+  // Liabilities & Equity". The two must be equal (the accounting identity
+  // Assets = Liabilities + Equity); we emit a balance check to surface drift.
+  // When no section carries a side flag (unseeded), fall back to a single TOTAL.
+  const sideConfigured = sections.some(
+    (s) => s.contributesAs === "asset" || s.contributesAs === "liability_equity"
+  );
+  const lastAssetIdx = sideConfigured
+    ? sections.map((s) => s.contributesAs).lastIndexOf("asset")
+    : -1;
 
-  for (const section of sections) {
+  let assetsCY = 0, assetsPY = 0;
+  let liabEqCY = 0, liabEqPY = 0;
+  let grandCY = 0, grandPY = 0;
+
+  sections.forEach((section, idx) => {
     const children = (childrenByParent.get(section.id) ?? []).sort((a, b) => a.sortOrder - b.sortOrder);
 
     let sectionCY = 0;
@@ -470,16 +483,52 @@ function buildBalanceSheetSheet(
 
     grandCY += sectionCY;
     grandPY += sectionPY;
-  }
+    if (section.contributesAs === "liability_equity") {
+      liabEqCY += sectionCY;
+      liabEqPY += sectionPY;
+    } else {
+      assetsCY += sectionCY;
+      assetsPY += sectionPY;
+    }
 
-  const grandVar = variance(grandCY, grandPY);
-  data.push([
-    "TOTAL",
-    grandCY || null,
-    grandPY || null,
-    grandVar,
-    variancePct(grandCY, grandPY),
-  ]);
+    // "Total Assets" closes the asset block, right after the last asset section.
+    if (sideConfigured && idx === lastAssetIdx) {
+      data.push([
+        "Total Assets",
+        assetsCY || null,
+        assetsPY || null,
+        variance(assetsCY, assetsPY),
+        variancePct(assetsCY, assetsPY),
+      ]);
+      data.push([]);
+    }
+  });
+
+  if (sideConfigured) {
+    data.push([
+      "Total Liabilities & Equity",
+      liabEqCY || null,
+      liabEqPY || null,
+      variance(liabEqCY, liabEqPY),
+      variancePct(liabEqCY, liabEqPY),
+    ]);
+    // Accounting identity check: should be ~0 in both columns.
+    data.push([
+      "Balance Check (Assets − Liabilities & Equity)",
+      assetsCY - liabEqCY,
+      assetsPY - liabEqPY,
+      null,
+      null,
+    ]);
+  } else {
+    data.push([
+      "TOTAL",
+      grandCY || null,
+      grandPY || null,
+      variance(grandCY, grandPY),
+      variancePct(grandCY, grandPY),
+    ]);
+  }
 
   return XLSX.utils.aoa_to_sheet(data);
 }

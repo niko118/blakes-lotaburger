@@ -250,14 +250,17 @@ const PNL_ACCOUNT_MAP: [string, string][] = [
 // Sections and groups mirror the workbook's "BS Current and Prior Year" detail:
 // 7 sections (indent 2), each with its named groups (indent 3). Loose accounts
 // that sit directly under a section become single-account groups.
+// contributesAs marks the balance-sheet side: 'asset' rolls up to Total
+// Assets, 'liability_equity' to Total Liabilities & Equity (which must be
+// equal — the accounting identity Assets = Liabilities + Equity).
 const BS_SECTIONS = [
-  { name: "Current Asset", sortOrder: 10 },
-  { name: "Inventory", sortOrder: 20 },
-  { name: "Fixed Asset", sortOrder: 30 },
-  { name: "Other Asset", sortOrder: 40 },
-  { name: "Current Liability", sortOrder: 50 },
-  { name: "Long Term Liability", sortOrder: 60 },
-  { name: "Equity", sortOrder: 70 },
+  { name: "Current Asset", sortOrder: 10, contributesAs: "asset" },
+  { name: "Inventory", sortOrder: 20, contributesAs: "asset" },
+  { name: "Fixed Asset", sortOrder: 30, contributesAs: "asset" },
+  { name: "Other Asset", sortOrder: 40, contributesAs: "asset" },
+  { name: "Current Liability", sortOrder: 50, contributesAs: "liability_equity" },
+  { name: "Long Term Liability", sortOrder: 60, contributesAs: "liability_equity" },
+  { name: "Equity", sortOrder: 70, contributesAs: "liability_equity" },
 ] as const;
 
 const BS_GROUPS: [string, string, number][] = [
@@ -557,7 +560,13 @@ async function seed() {
     for (const section of BS_SECTIONS) {
       const [row] = await tx
         .insert(reportGroups)
-        .values({ name: section.name, parentId: null, reportType: "bs", sortOrder: section.sortOrder })
+        .values({
+          name: section.name,
+          parentId: null,
+          reportType: "bs",
+          sortOrder: section.sortOrder,
+          contributesAs: section.contributesAs,
+        })
         .returning({ id: reportGroups.id });
       bsSectionIds[section.name] = row.id;
     }

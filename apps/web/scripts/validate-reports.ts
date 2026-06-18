@@ -3,100 +3,191 @@
  * legacy manual workbook ("Profit and Loss Workbook PD 12 2025.xlsx").
  *
  * It runs the REAL generation code path (generateReport) on the same R365
- * source files the analyst used, then extracts every subtotal / total / grand
- * total and lines them up against the workbook's own summary tabs so we can
- * see — line by line — where we agree and where we diverge.
+ * source files the analyst used — loading the seeded report groups + account
+ * mappings from the database, exactly like the app does — then asserts our
+ * section totals and Net Income match the workbook. Exits non-zero on any
+ * mismatch so it can be wired into CI / a pre-push check.
+ *
+ * Requires a running, seeded database:
+ *   npm run db:local:start
+ *   npm run db:migrate
+ *   npx tsx -r dotenv/config scripts/seed-report-mappings.ts   (if not seeded)
  *
  * Run:
- *   npx tsx scripts/validate-reports.ts
+ *   DATABASE_URL=postgresql://postgres:postgres@localhost:54322/postgres \
+ *     npx tsx scripts/validate-reports.ts
  *
- * The detail reports (CM vs PM, CY vs PY) need NO database — they sum the
- * consolidated P&L sections directly. This script therefore validates the
- * parser + elimination + totalling logic without a running DB.
+ * Note on Food Cost: the detail reports fold the commissary elimination INTO
+ * the section total, while the workbook shows it as a separate line below a
+ * pre-elimination "Total Food Cost". We therefore reconcile our food cost
+ * against (workbook pre-elim total + workbook elimination line) — same net.
  */
 
 import * as XLSX from "xlsx";
 import { readFileSync } from "fs";
 import { join } from "path";
+import postgres from "postgres";
 import { parsePnL } from "../lib/reports/parse-pnl";
 import { parseBalanceSheet } from "../lib/reports/parse-balance-sheet";
-import { generateReport } from "../lib/reports/generate-reports";
+import { generateReport, type ReportType } from "../lib/reports/generate-reports";
 import type { ParsedFiles } from "../lib/reports/types";
 
 const DIR = "/Users/nicogarcia/Documents/GitHub/blakes-lotaburger/Example Files/reports";
+const WORKBOOK = "Profit and Loss Workbook PD 12 2025.xlsx";
+const TOLERANCE = 0.01; // cents
 
-function readWb(name: string) {
-  return XLSX.read(readFileSync(join(DIR, name)), { type: "buffer" });
+interface DbGroup {
+  id: number;
+  name: string;
+  parentId: number | null;
+  reportType: string;
+  sortOrder: number;
+  subtotalAfter: boolean;
+  contributesAs: string | null;
+  eliminateCommissary: boolean;
+}
+interface DbMapping {
+  accountName: string;
+  groupId: number | null;
+  ignored: boolean;
 }
 
+type Row = (string | number | null)[];
+
+const readWb = (name: string) => XLSX.read(readFileSync(join(DIR, name)), { type: "buffer" });
+const firstSheet = (name: string) => Object.values(readWb(name).Sheets)[0];
+const aoaOf = (sheet: XLSX.WorkSheet): Row[] => XLSX.utils.sheet_to_json<Row>(sheet, { header: 1, defval: null });
+
 function fmt(n: number | null | undefined): string {
-  if (n === null || n === undefined || n === "") return "—";
-  if (typeof n !== "number") return String(n);
+  if (typeof n !== "number") return "—";
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// ── Load + parse the R365 source files (our input) ──────────────────────────
-const consolidatedPnL = parsePnL(readWb("FY25 PD12 Consolo Profit and Loss.xlsx").Sheets["Sheet1"] ??
-  Object.values(readWb("FY25 PD12 Consolo Profit and Loss.xlsx").Sheets)[0]);
-const commissaryPnL = parsePnL(Object.values(readWb("FY25 PD12 COMM Profit and Loss.xlsx").Sheets)[0]);
-const currentYearBS = parseBalanceSheet(Object.values(readWb("FY25 PD12 BS.xlsx").Sheets)[0]);
-const priorYearBS = parseBalanceSheet(Object.values(readWb("FY24 PD12 BS.xlsx").Sheets)[0]);
-
-const parsedFiles: ParsedFiles = { consolidatedPnL, commissaryPnL, currentYearBS, priorYearBS };
-
-// ── Run our real generation code path ───────────────────────────────────────
-function sheetAoA(buf: Buffer): (string | number | null)[][] {
-  const wb = XLSX.read(buf, { type: "buffer" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+function generatedAoA(input: { parsedFiles: ParsedFiles; reportType: ReportType; groups: DbGroup[]; mappings: DbMapping[] }): Row[] {
+  const wb = XLSX.read(generateReport(input), { type: "buffer" });
+  return aoaOf(wb.Sheets[wb.SheetNames[0]]);
 }
 
-const cmAoA = sheetAoA(generateReport({ parsedFiles, reportType: "cm-vs-pm" }));
-const cyAoA = sheetAoA(generateReport({ parsedFiles, reportType: "cy-vs-py" }));
-
-// ── Helper: print every total/elimination/grand row from one of our sheets ──
-function printOurTotals(label: string, aoa: (string | number | null)[][]) {
-  console.log(`\n========= OUR ${label} =========`);
-  for (const r of aoa) {
-    const name = String(r[0] ?? "");
-    if (/^total|^net|elimination|^TOTAL/i.test(name)) {
-      console.log(`  ${name.padEnd(34)} cur=${fmt(r[1] as number).padStart(16)}  prior=${fmt(r[2] as number).padStart(16)}`);
+// Find the first row whose first cell (trimmed) matches a label, return a column.
+function valueAt(rows: Row[], label: string, col: number): number | null {
+  for (const r of rows) {
+    if (String(r[0] ?? "").trim() === label) {
+      const v = r[col];
+      return typeof v === "number" ? v : null;
     }
   }
+  return null;
 }
 
-printOurTotals("CM vs PM (period)", cmAoA);
-printOurTotals("CY vs PY (YTD)", cyAoA);
-
-// ── Workbook ground truth: pull labelled total rows ─────────────────────────
-function printWbTotals(sheetName: string, curCol: number, priCol: number) {
-  const wb = readWb("Profit and Loss Workbook PD 12 2025.xlsx");
-  const aoa = XLSX.utils.sheet_to_json<(string | number | null)[]>(wb.Sheets[sheetName], { header: 1, defval: null });
-  console.log(`\n========= WORKBOOK "${sheetName}" =========`);
-  for (const r of aoa) {
-    const name = String(r[0] ?? "");
-    if (/^total|^net|elimination/i.test(name)) {
-      console.log(`  ${name.padEnd(40)} cur=${fmt(r[curCol] as number).padStart(16)}  prior=${fmt(r[priCol] as number).padStart(16)}`);
+// Workbook detail tabs can repeat a label ("Total Food Cost" twice); grab the
+// LAST occurrence (the grand subtotal) when needed.
+function lastValueAt(rows: Row[], label: string, col: number): number | null {
+  let found: number | null = null;
+  for (const r of rows) {
+    if (String(r[0] ?? "").trim() === label) {
+      const v = r[col];
+      if (typeof v === "number") found = v;
     }
   }
+  return found;
 }
 
-printWbTotals("CM vs PM detail", 1, 4);
-printWbTotals("CY vs PY detail", 1, 4);
+interface Check { label: string; ours: number | null; expected: number | null; }
+const checks: Check[] = [];
+let failures = 0;
 
-// ── Summary P&L (workbook) key anchors ──────────────────────────────────────
-const sumWb = readWb("Profit and Loss Workbook PD 12 2025.xlsx");
-const sumAoA = XLSX.utils.sheet_to_json<(string | number | null)[]>(sumWb.Sheets["Summary P&L"], { header: 1, defval: null });
-console.log(`\n========= WORKBOOK "Summary P&L" (YTD anchors) =========`);
-for (const r of sumAoA) {
-  const name = String(r[0] ?? "");
-  if (name) console.log(`  ${name.padEnd(40)} 2025=${fmt(r[1] as number).padStart(16)}  2024=${fmt(r[2] as number).padStart(16)}`);
+function expect(label: string, ours: number | null, expected: number | null): void {
+  checks.push({ label, ours, expected });
+  const ok = ours !== null && expected !== null && Math.abs(ours - expected) < TOLERANCE;
+  if (!ok) failures++;
+  const flag = ok ? "✓" : "✗";
+  const diff = ours !== null && expected !== null ? `  diff=${fmt(ours - expected)}` : "  (missing)";
+  console.log(`  ${flag} ${label.padEnd(36)} ours=${fmt(ours).padStart(16)}  expected=${fmt(expected).padStart(16)}${ok ? "" : diff}`);
 }
 
-// ── Elimination reconciliation ──────────────────────────────────────────────
-console.log(`\n========= ELIMINATION =========`);
-console.log(`  Workbook 'Elimination for Comissary Sales to Stores' (period) = -592,723.69`);
-console.log(`  (Our value appears as 'Commissary Elimination' in the OUR CM vs PM output above.)`);
+async function main(): Promise<void> {
+  if (!process.env.DATABASE_URL) {
+    console.error("DATABASE_URL is required (start + seed the local DB first).");
+    process.exit(2);
+  }
 
-console.log(`\nParsed counts: consolidated rows=${consolidatedPnL.rows.length}, commissary rows=${commissaryPnL.rows.length}`);
-console.log(`Period ending=${consolidatedPnL.periodEnding}, location=${consolidatedPnL.location}`);
+  const parsedFiles: ParsedFiles = {
+    consolidatedPnL: parsePnL(firstSheet("FY25 PD12 Consolo Profit and Loss.xlsx")),
+    commissaryPnL: parsePnL(firstSheet("FY25 PD12 COMM Profit and Loss.xlsx")),
+    currentYearBS: parseBalanceSheet(firstSheet("FY25 PD12 BS.xlsx")),
+    priorYearBS: parseBalanceSheet(firstSheet("FY24 PD12 BS.xlsx")),
+  };
+
+  const sql = postgres(process.env.DATABASE_URL);
+  const groups = (await sql`
+    select id, name, parent_id as "parentId", report_type as "reportType",
+           sort_order as "sortOrder", subtotal_after as "subtotalAfter",
+           contributes_as as "contributesAs", eliminate_commissary as "eliminateCommissary"
+    from report_groups`) as unknown as DbGroup[];
+  const mappings = (await sql`
+    select account_name as "accountName", group_id as "groupId", ignored
+    from account_mappings`) as unknown as DbMapping[];
+  await sql.end();
+
+  if (groups.length === 0 || mappings.length === 0) {
+    console.error(`Seed appears empty (groups=${groups.length}, mappings=${mappings.length}). Run the seed first.`);
+    process.exit(2);
+  }
+
+  const wbBook = readWb(WORKBOOK);
+
+  // ── Detail reports: ours folds elimination into Total Food Cost, so compare
+  //    food cost against (workbook pre-elim total + workbook elimination). ────
+  for (const [reportType, wbSheet, mode] of [
+    ["cm-vs-pm", "CM vs PM detail", "period"],
+    ["cy-vs-py", "CY vs PY detail", "ytd"],
+  ] as const) {
+    const ours = generatedAoA({ parsedFiles, reportType, groups, mappings });
+    const wb = aoaOf(wbBook.Sheets[wbSheet]);
+    const ourCol = 1; // current value
+    const wbCol = 1;
+    const wbFoodCost = lastValueAt(wb, "Total Food Cost", wbCol); // grand, pre-elim
+    const wbElim = valueAt(wb, "Elimination for Comissary Sales to Stores", wbCol);
+    const wbFoodNet = wbFoodCost !== null && wbElim !== null ? wbFoodCost + wbElim : null;
+
+    console.log(`\n===== ${reportType.toUpperCase()} (${mode}) vs "${wbSheet}" =====`);
+    expect(`${mode} Total Sales`, valueAt(ours, "Total Sales", ourCol), valueAt(wb, "Total Sales", wbCol));
+    expect(`${mode} Total Food Cost (net)`, lastValueAt(ours, "Total Food Cost", ourCol), wbFoodNet);
+    expect(`${mode} Total Labor Cost`, valueAt(ours, "Total Labor Cost", ourCol), valueAt(wb, "Total Labor Cost", wbCol));
+    expect(`${mode} Total Operating Expense`, valueAt(ours, "Total Operating Expense", ourCol), valueAt(wb, "Total Operating Expense", wbCol));
+    expect(`${mode} Total Non Controllable Expense`, valueAt(ours, "Total Non Controllable Expense", ourCol), valueAt(wb, "Total Non Controllable Expense", wbCol));
+    expect(`${mode} Net Income`, valueAt(ours, "NET INCOME / (LOSS)", ourCol), valueAt(wb, "Net Profit", wbCol));
+  }
+
+  // ── Summary P&L: workbook's grouped "Net Profit" carries a known 319.56
+  //    rounding gap vs R365; the authoritative figure is its "Net Profit P&L"
+  //    line, which equals R365's actual bottom line — and our engine. ────────
+  const sumOurs = generatedAoA({ parsedFiles, reportType: "summary-pnl", groups, mappings });
+  const sumWb = aoaOf(wbBook.Sheets["Summary P&L"]);
+  console.log(`\n===== SUMMARY P&L (YTD 2025) vs "Summary P&L" =====`);
+  const ytdCol = 7; // our Summary YTD Actual column
+  // Use lastValueAt for section totals: the Summary repeats "Total Food Cost"
+  // (raw-food intermediate subtotal, then the final section total).
+  expect("YTD Total Sales", lastValueAt(sumOurs, "Total Sales", ytdCol), valueAt(sumWb, "Total Sales", 1));
+  expect("YTD Total Food Cost", lastValueAt(sumOurs, "Total Food Cost", ytdCol), valueAt(sumWb, "Total Food Cost", 1));
+  expect("YTD Total Labor Cost", lastValueAt(sumOurs, "Total Labor Cost", ytdCol), valueAt(sumWb, "Total Labor Cost", 1));
+  // Authoritative R365 bottom line (workbook "Net Profit P&L"), not its grouped "Net Profit".
+  expect("YTD Net Income (vs R365 actual)", valueAt(sumOurs, "NET INCOME / (LOSS)", ytdCol), valueAt(sumWb, "Net Profit P&L", 1));
+
+  // ── Balance Sheet: section totals against the workbook's BS Summary tab. ──
+  const bsOurs = generatedAoA({ parsedFiles, reportType: "balance-sheet", groups, mappings });
+  const bsWb = aoaOf(wbBook.Sheets["Balance Sheet Summary"]);
+  console.log(`\n===== BALANCE SHEET vs "Balance Sheet Summary" =====`);
+  const bsWbCol = 3; // workbook current-year value column
+  for (const section of ["Total Current Asset", "Total Inventory", "Total Fixed Asset", "Total Other Asset", "Total Current Liability", "Total Long Term Liability", "Total Equity"]) {
+    expect(section, valueAt(bsOurs, section, 1), valueAt(bsWb, section, bsWbCol));
+  }
+
+  console.log(`\n${failures === 0 ? "✅ ALL CHECKS PASSED" : `❌ ${failures} CHECK(S) FAILED`} (${checks.length} total)`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
