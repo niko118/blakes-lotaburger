@@ -3,19 +3,14 @@
  * legacy manual workbook ("Profit and Loss Workbook PD 12 2025.xlsx").
  *
  * It runs the REAL generation code path (generateReport) on the same R365
- * source files the analyst used — loading the seeded report groups + account
- * mappings from the database, exactly like the app does — then asserts our
- * section totals and Net Income match the workbook. Exits non-zero on any
- * mismatch so it can be wired into CI / a pre-push check.
- *
- * Requires a running, seeded database:
- *   npm run db:local:start
- *   npm run db:migrate
- *   npx tsx -r dotenv/config scripts/seed-report-mappings.ts   (if not seeded)
+ * source files the analyst used — building the report groups + account mappings
+ * in memory via buildSeedData (the same baseline the DB seed writes) — then
+ * asserts our section totals and Net Income match the workbook. Exits non-zero
+ * on any mismatch so it can be wired into CI / a pre-push check. No database
+ * required.
  *
  * Run:
- *   DATABASE_URL=postgresql://postgres:postgres@localhost:54322/postgres \
- *     npx tsx scripts/validate-reports.ts
+ *   npx tsx scripts/validate-reports.ts
  *
  * Note on Food Cost: the detail reports fold the commissary elimination INTO
  * the section total, while the workbook shows it as a separate line below a
@@ -26,31 +21,15 @@
 import * as XLSX from "xlsx";
 import { readFileSync } from "fs";
 import { join } from "path";
-import postgres from "postgres";
 import { parsePnL } from "../lib/reports/parse-pnl";
 import { parseBalanceSheet } from "../lib/reports/parse-balance-sheet";
 import { generateReport, type ReportType } from "../lib/reports/generate-reports";
+import { buildSeedData } from "./seed-report-mappings";
 import type { ParsedFiles } from "../lib/reports/types";
 
 const DIR = "/Users/nicogarcia/Documents/GitHub/blakes-lotaburger/Example Files/reports";
 const WORKBOOK = "Profit and Loss Workbook PD 12 2025.xlsx";
 const TOLERANCE = 0.01; // cents
-
-interface DbGroup {
-  id: number;
-  name: string;
-  parentId: number | null;
-  reportType: string;
-  sortOrder: number;
-  subtotalAfter: boolean;
-  contributesAs: string | null;
-  eliminateCommissary: boolean;
-}
-interface DbMapping {
-  accountName: string;
-  groupId: number | null;
-  ignored: boolean;
-}
 
 type Row = (string | number | null)[];
 
@@ -63,7 +42,7 @@ function fmt(n: number | null | undefined): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function generatedAoA(input: { parsedFiles: ParsedFiles; reportType: ReportType; groups: DbGroup[]; mappings: DbMapping[] }): Row[] {
+function generatedAoA(input: Parameters<typeof generateReport>[0]): Row[] {
   const wb = XLSX.read(generateReport(input), { type: "buffer" });
   return aoaOf(wb.Sheets[wb.SheetNames[0]]);
 }
@@ -106,11 +85,6 @@ function expect(label: string, ours: number | null, expected: number | null): vo
 }
 
 async function main(): Promise<void> {
-  if (!process.env.DATABASE_URL) {
-    console.error("DATABASE_URL is required (start + seed the local DB first).");
-    process.exit(2);
-  }
-
   const parsedFiles: ParsedFiles = {
     consolidatedPnL: parsePnL(firstSheet("FY25 PD12 Consolo Profit and Loss.xlsx")),
     commissaryPnL: parsePnL(firstSheet("FY25 PD12 COMM Profit and Loss.xlsx")),
@@ -118,21 +92,7 @@ async function main(): Promise<void> {
     priorYearBS: parseBalanceSheet(firstSheet("FY24 PD12 BS.xlsx")),
   };
 
-  const sql = postgres(process.env.DATABASE_URL);
-  const groups = (await sql`
-    select id, name, parent_id as "parentId", report_type as "reportType",
-           sort_order as "sortOrder", subtotal_after as "subtotalAfter",
-           contributes_as as "contributesAs", eliminate_commissary as "eliminateCommissary"
-    from report_groups`) as unknown as DbGroup[];
-  const mappings = (await sql`
-    select account_name as "accountName", group_id as "groupId", ignored
-    from account_mappings`) as unknown as DbMapping[];
-  await sql.end();
-
-  if (groups.length === 0 || mappings.length === 0) {
-    console.error(`Seed appears empty (groups=${groups.length}, mappings=${mappings.length}). Run the seed first.`);
-    process.exit(2);
-  }
+  const { groups, mappings } = buildSeedData();
 
   const wbBook = readWb(WORKBOOK);
 
@@ -165,7 +125,7 @@ async function main(): Promise<void> {
   const sumOurs = generatedAoA({ parsedFiles, reportType: "summary-pnl", groups, mappings });
   const sumWb = aoaOf(wbBook.Sheets["Summary P&L"]);
   console.log(`\n===== SUMMARY P&L (YTD 2025) vs "Summary P&L" =====`);
-  const ytdCol = 7; // our Summary YTD Actual column
+  const ytdCol = 1; // our Summary YTD Actual column
   // Use lastValueAt for section totals: the Summary repeats "Total Food Cost"
   // (raw-food intermediate subtotal, then the final section total).
   expect("YTD Total Sales", lastValueAt(sumOurs, "Total Sales", ytdCol), valueAt(sumWb, "Total Sales", 1));
@@ -179,9 +139,28 @@ async function main(): Promise<void> {
   const bsWb = aoaOf(wbBook.Sheets["Balance Sheet Summary"]);
   console.log(`\n===== BALANCE SHEET vs "Balance Sheet Summary" =====`);
   const bsWbCol = 3; // workbook current-year value column
-  for (const section of ["Total Current Asset", "Total Inventory", "Total Fixed Asset", "Total Other Asset", "Total Current Liability", "Total Long Term Liability", "Total Equity"]) {
+  for (const section of ["Total Current Asset", "Total Inventory", "Total Fixed Asset", "Total Other Asset", "Total Current Liability", "Total Long Term Liability", "Total Liabilities", "Total Equity"]) {
     expect(section, valueAt(bsOurs, section, 1), valueAt(bsWb, section, bsWbCol));
   }
+
+  // ── Structural assertions: the line items the analyst feedback was about must
+  //    be present (group subtotals in the detail, Total Liabilities in the BS,
+  //    Total Prime Costs in the summary). Guards against regressing the fix. ──
+  console.log(`\n===== STRUCTURE (line items present) =====`);
+  const present = (rows: Row[], label: string): boolean =>
+    rows.some((r) => String(r[0] ?? "").trim() === label);
+  const expectPresent = (label: string, ok: boolean): void => {
+    checks.push({ label, ours: ok ? 1 : null, expected: 1 });
+    if (!ok) failures++;
+    console.log(`  ${ok ? "✓" : "✗"} ${label}`);
+  };
+
+  const detail = generatedAoA({ parsedFiles, reportType: "cm-vs-pm", groups, mappings });
+  for (const sub of ["Total Food Sales", "Total Comps and Discounts", "Total Salaries and Wages", "Total Direct Operating Expense", "Total Marketing", "Total Occupancy Costs"]) {
+    expectPresent(`detail: ${sub}`, present(detail, sub));
+  }
+  expectPresent("balance sheet: Total Liabilities", present(bsOurs, "Total Liabilities"));
+  expectPresent("summary: Total Prime Costs", present(sumOurs, "Total Prime Costs"));
 
   console.log(`\n${failures === 0 ? "✅ ALL CHECKS PASSED" : `❌ ${failures} CHECK(S) FAILED`} (${checks.length} total)`);
   process.exit(failures === 0 ? 0 : 1);

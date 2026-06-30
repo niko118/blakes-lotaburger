@@ -76,7 +76,7 @@ const COLORS = {
 const NUM_FMT = "#,##0.00;[Red](#,##0.00)";
 
 type RowClass =
-  | "title" | "meta" | "header" | "section"
+  | "title" | "meta" | "header" | "section" | "subheader"
   | "total" | "grandtotal" | "check" | "detail" | "blank";
 
 // Grand totals get the strongest emphasis (accent fill, white text).
@@ -102,9 +102,10 @@ function classifyRow(row: (string | number | null)[], rowIndex: number, headerRo
   if (label.startsWith("Balance Check")) return "check";
   if (GRAND_TOTAL_LABELS.has(label)) return "grandtotal";
   if (label.startsWith("Total ")) return "total";
-  // Section header: uppercase label with no values in the rest of the row.
+  // A label with no values is a header: UPPERCASE → top-level section,
+  // otherwise → subgroup header (e.g. "Food Sales", "Salaries and Wages").
   const restEmpty = row.slice(1).every((c) => c === null || c === undefined || c === "");
-  if (restEmpty && label === label.toUpperCase()) return "section";
+  if (restEmpty) return label === label.toUpperCase() ? "section" : "subheader";
   return "detail";
 }
 
@@ -122,6 +123,7 @@ const ROW_STYLE: Partial<Record<RowClass, Record<string, unknown>>> = {
   meta: { font: { italic: true, sz: 10, color: { rgb: COLORS.silver } } },
   header: { font: { bold: true, color: { rgb: COLORS.white } }, fill: solidFill(COLORS.steel) },
   section: { font: { bold: true, color: { rgb: COLORS.steel } }, fill: solidFill(COLORS.cloud) },
+  subheader: { font: { bold: true, color: { rgb: COLORS.steel } } },
   total: { font: { bold: true, color: { rgb: COLORS.steel } }, fill: solidFill(COLORS.fog), border: topBorder },
   grandtotal: { font: { bold: true, color: { rgb: COLORS.white } }, fill: solidFill(COLORS.primary), border: topBottomBorder },
   check: { font: { bold: true }, fill: solidFill(COLORS.fog) },
@@ -355,9 +357,19 @@ function renderDetailPnL(model: PnLModel, meta: ParsedPnL, mode: "period" | "ytd
 
     const running = zeroVals();
     for (const group of section.groups) {
-      for (const acc of group.accounts) line(`  ${acc.name}`, acc.vals);
+      if (group.accounts.length === 1) {
+        // Single-account group: one line at the group level (no header/subtotal).
+        line(group.accounts[0].name, group.vals);
+      } else if (group.accounts.length > 1) {
+        // Multi-account group: header + accounts + a "Total {group}" subtotal —
+        // unless the group already drives a section-level intermediate subtotal
+        // (subtotalAfter), which would duplicate it.
+        data.push([group.name, null, null, null, null, null, null]);
+        for (const acc of group.accounts) line(`  ${acc.name}`, acc.vals);
+        if (!group.subtotalAfter) line(`Total ${group.name}`, group.vals);
+      }
       addVals(running, group.vals);
-      // Intermediate subtotal (pre-elimination), e.g. raw "Total Food Cost".
+      // Intermediate section subtotal (pre-elimination), e.g. raw "Total Food Cost".
       if (group.subtotalAfter) line(`Total ${section.name}`, running);
     }
 
@@ -375,120 +387,50 @@ function renderDetailPnL(model: PnLModel, meta: ParsedPnL, mode: "period" | "ytd
 // ─────────────────────────────────────────────────────────────────────────────
 
 function renderSummaryPnL(model: PnLModel, meta: ParsedPnL): XLSX.WorkSheet {
-  const sales = model.salesBase;
-
+  // Year-to-date summary: one line per group (no account detail), two value
+  // columns (current vs prior year) plus variance. The detail reports carry the
+  // account-level and period/%-of-sales breakdowns; this stays a summary.
   const data: (string | number | null)[][] = [];
   data.push(["Summary P&L"]);
   data.push([`Period: ${meta.periodEnding}`]);
   data.push([`Location: ${meta.location}`]);
   data.push([]);
-  data.push([
-    "Line Item",
-    "Period Actual",
-    "% Sales",
-    "Period PY",
-    "PY % Sales",
-    "$ Var",
-    "% Var",
-    "YTD Actual",
-    "% Sales",
-    "YTD PY",
-    "PY % Sales",
-    "$ Var",
-    "% Var",
-  ]);
+  data.push(["Line Item", "YTD Actual", "Prior Year YTD", "$ Variance", "% Variance"]);
+
+  const row = (label: string, v: Vals): void => {
+    data.push([label, v.ytd || null, v.ytdPY || null, variance(v.ytd, v.ytdPY), variancePct(v.ytd, v.ytdPY)]);
+  };
+
+  // Prime Cost = Food Cost + Labor Cost (standard restaurant operating metric),
+  // emitted right after the Labor Cost section closes.
+  const PRIME_SECTIONS = new Set(["Food Cost", "Labor Cost"]);
+  const primeCost = zeroVals();
 
   for (const section of model.sections) {
-    // Section header row
-    data.push([section.name.toUpperCase(), null, null, null, null, null, null, null, null, null, null, null, null]);
+    data.push([section.name.toUpperCase(), null, null, null, null]);
 
     const running = zeroVals();
     for (const group of section.groups) {
-      const v = group.vals;
-      data.push([
-        `  ${group.name}`,
-        v.period || null,
-        null, // group-level % of sales intentionally omitted
-        v.periodPY || null,
-        null,
-        variance(v.period, v.periodPY),
-        variancePct(v.period, v.periodPY),
-        v.ytd || null,
-        null,
-        v.ytdPY || null,
-        null,
-        variance(v.ytd, v.ytdPY),
-        variancePct(v.ytd, v.ytdPY),
-      ]);
-
-      addVals(running, v);
+      row(`  ${group.name}`, group.vals);
+      addVals(running, group.vals);
       // Intermediate subtotal (pre-elimination), e.g. raw "Total Food Cost".
-      if (group.subtotalAfter) {
-        data.push([
-          `Total ${section.name}`,
-          running.period || null,
-          null,
-          running.periodPY || null,
-          null,
-          variance(running.period, running.periodPY),
-          variancePct(running.period, running.periodPY),
-          running.ytd || null,
-          null,
-          running.ytdPY || null,
-          null,
-          variance(running.ytd, running.ytdPY),
-          variancePct(running.ytd, running.ytdPY),
-        ]);
-      }
+      if (group.subtotalAfter) row(`Total ${section.name}`, running);
     }
 
     if (section.eliminate) {
       const e = negVals(section.eliminate);
-      data.push([
-        "  Commissary Elimination",
-        e.period || null,
-        null, null, null,
-        null, null,
-        e.ytd || null,
-        null, null, null, null, null,
-      ]);
+      data.push(["  Commissary Elimination", e.ytd || null, null, null, null]);
     }
 
-    const t = section.total;
-    data.push([
-      `Total ${section.name}`,
-      t.period || null,
-      pct(t.period, sales.period),
-      t.periodPY || null,
-      pct(t.periodPY, sales.period),
-      variance(t.period, t.periodPY),
-      variancePct(t.period, t.periodPY),
-      t.ytd || null,
-      pct(t.ytd, sales.ytd),
-      t.ytdPY || null,
-      pct(t.ytdPY, sales.ytd),
-      variance(t.ytd, t.ytdPY),
-      variancePct(t.ytd, t.ytdPY),
-    ]);
+    row(`Total ${section.name}`, section.total);
+
+    if (PRIME_SECTIONS.has(section.name)) addVals(primeCost, section.total);
+    if (section.name === "Labor Cost") row("Total Prime Costs", primeCost);
+
     data.push([]);
   }
 
-  const n = model.netIncome;
-  data.push([
-    "NET INCOME / (LOSS)",
-    n.period || null,
-    pct(n.period, sales.period),
-    n.periodPY || null,
-    pct(n.periodPY, sales.period),
-    variance(n.period, n.periodPY),
-    variancePct(n.period, n.periodPY),
-    n.ytd || null,
-    pct(n.ytd, sales.ytd),
-    n.ytdPY || null,
-    pct(n.ytdPY, sales.ytd),
-    variance(n.ytd, n.ytdPY),
-    variancePct(n.ytd, n.ytdPY),
-  ]);
+  row("NET INCOME / (LOSS)", model.netIncome);
 
   return sheetWithAutoWidth(data);
 }
@@ -554,19 +496,22 @@ function buildBalanceSheetSheet(
   data.push(["Line Item", "Current Year", "Prior Year", "$ Variance", "% Variance"]);
 
   // Balance-sheet sides are data-driven via contributesAs on each section:
-  // 'asset' rolls up to "Total Assets", 'liability_equity' to "Total
-  // Liabilities & Equity". The two must be equal (the accounting identity
-  // Assets = Liabilities + Equity); we emit a balance check to surface drift.
-  // When no section carries a side flag (unseeded), fall back to a single TOTAL.
-  const sideConfigured = sections.some(
-    (s) => s.contributesAs === "asset" || s.contributesAs === "liability_equity"
-  );
-  const lastAssetIdx = sideConfigured
-    ? sections.map((s) => s.contributesAs).lastIndexOf("asset")
-    : -1;
+  // 'asset' rolls up to "Total Assets", 'liability' to "Total Liabilities",
+  // 'equity' to "Total Equity"; liabilities + equity give "Total Liabilities &
+  // Equity", which must equal Total Assets (the accounting identity
+  // Assets = Liabilities + Equity). We emit a balance check to surface drift.
+  // Legacy 'liability_equity' (pre-split seed) is treated as equity so the grand
+  // total stays correct; only the "Total Liabilities" line is absent until
+  // re-seeded. When no section carries a side flag, fall back to a single TOTAL.
+  const SIDES = new Set(["asset", "liability", "equity"]);
+  const sideConfigured = sections.some((s) => SIDES.has(s.contributesAs ?? ""));
+  const sideList = sections.map((s) => s.contributesAs);
+  const lastAssetIdx = sideConfigured ? sideList.lastIndexOf("asset") : -1;
+  const lastLiabIdx = sideConfigured ? sideList.lastIndexOf("liability") : -1;
 
   let assetsCY = 0, assetsPY = 0;
-  let liabEqCY = 0, liabEqPY = 0;
+  let liabCY = 0, liabPY = 0;
+  let equityCY = 0, equityPY = 0;
   let grandCY = 0, grandPY = 0;
 
   sections.forEach((section, idx) => {
@@ -616,12 +561,16 @@ function buildBalanceSheetSheet(
 
     grandCY += sectionCY;
     grandPY += sectionPY;
-    if (section.contributesAs === "liability_equity") {
-      liabEqCY += sectionCY;
-      liabEqPY += sectionPY;
-    } else {
+    if (section.contributesAs === "asset") {
       assetsCY += sectionCY;
       assetsPY += sectionPY;
+    } else if (section.contributesAs === "liability") {
+      liabCY += sectionCY;
+      liabPY += sectionPY;
+    } else {
+      // 'equity' and legacy 'liability_equity' both roll into equity.
+      equityCY += sectionCY;
+      equityPY += sectionPY;
     }
 
     // "Total Assets" closes the asset block, right after the last asset section.
@@ -635,9 +584,23 @@ function buildBalanceSheetSheet(
       ]);
       data.push([]);
     }
+
+    // "Total Liabilities" closes the liability block, before the Equity section.
+    if (sideConfigured && idx === lastLiabIdx) {
+      data.push([
+        "Total Liabilities",
+        liabCY || null,
+        liabPY || null,
+        variance(liabCY, liabPY),
+        variancePct(liabCY, liabPY),
+      ]);
+      data.push([]);
+    }
   });
 
   if (sideConfigured) {
+    const liabEqCY = liabCY + equityCY;
+    const liabEqPY = liabPY + equityPY;
     data.push([
       "Total Liabilities & Equity",
       liabEqCY || null,

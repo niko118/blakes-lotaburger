@@ -251,16 +251,17 @@ const PNL_ACCOUNT_MAP: [string, string][] = [
 // 7 sections (indent 2), each with its named groups (indent 3). Loose accounts
 // that sit directly under a section become single-account groups.
 // contributesAs marks the balance-sheet side: 'asset' rolls up to Total
-// Assets, 'liability_equity' to Total Liabilities & Equity (which must be
-// equal — the accounting identity Assets = Liabilities + Equity).
+// Assets, 'liability' to Total Liabilities, 'equity' to Total Equity;
+// liabilities + equity = Total Liabilities & Equity, which must equal Total
+// Assets (the accounting identity Assets = Liabilities + Equity).
 const BS_SECTIONS = [
   { name: "Current Asset", sortOrder: 10, contributesAs: "asset" },
   { name: "Inventory", sortOrder: 20, contributesAs: "asset" },
   { name: "Fixed Asset", sortOrder: 30, contributesAs: "asset" },
   { name: "Other Asset", sortOrder: 40, contributesAs: "asset" },
-  { name: "Current Liability", sortOrder: 50, contributesAs: "liability_equity" },
-  { name: "Long Term Liability", sortOrder: 60, contributesAs: "liability_equity" },
-  { name: "Equity", sortOrder: 70, contributesAs: "liability_equity" },
+  { name: "Current Liability", sortOrder: 50, contributesAs: "liability" },
+  { name: "Long Term Liability", sortOrder: 60, contributesAs: "liability" },
+  { name: "Equity", sortOrder: 70, contributesAs: "equity" },
 ] as const;
 
 const BS_GROUPS: [string, string, number][] = [
@@ -505,6 +506,73 @@ const IGNORED_BS_ACCOUNTS = [
 ];
 
 // ---------------------------------------------------------------------------
+// IN-MEMORY BUILDER
+// Assembles the same baseline the seed runner writes to the DB, but as plain
+// arrays with synthetic ids. Lets offline tooling (report validation) run the
+// real generation code path without a database. Mirrors the runner's insert
+// order so ids and relationships are deterministic.
+// ---------------------------------------------------------------------------
+
+export interface SeedGroup {
+  id: number;
+  name: string;
+  parentId: number | null;
+  reportType: string;
+  sortOrder: number;
+  subtotalAfter: boolean;
+  contributesAs: string | null;
+  eliminateCommissary: boolean;
+}
+export interface SeedMapping {
+  accountName: string;
+  groupId: number | null;
+  ignored: boolean;
+}
+
+export function buildSeedData(): { groups: SeedGroup[]; mappings: SeedMapping[] } {
+  const groups: SeedGroup[] = [];
+  const mappings: SeedMapping[] = [];
+  let nextId = 1;
+
+  const pnlSectionIds: Record<string, number> = {};
+  const pnlGroupIds: Record<string, number> = {};
+  const bsSectionIds: Record<string, number> = {};
+  const bsGroupIds: Record<string, number> = {};
+
+  for (const s of PNL_SECTIONS) {
+    const id = nextId++;
+    pnlSectionIds[s.name] = id;
+    groups.push({ id, name: s.name, parentId: null, reportType: "pnl", sortOrder: s.sortOrder, subtotalAfter: false, contributesAs: s.contributesAs, eliminateCommissary: s.eliminateCommissary });
+  }
+  for (const [sectionName, groupName, sortOrder] of PNL_GROUPS) {
+    const id = nextId++;
+    pnlGroupIds[groupName] = id;
+    groups.push({ id, name: groupName, parentId: pnlSectionIds[sectionName], reportType: "pnl", sortOrder, subtotalAfter: PNL_SUBTOTAL_AFTER_GROUPS.has(groupName), contributesAs: null, eliminateCommissary: false });
+  }
+  for (const s of BS_SECTIONS) {
+    const id = nextId++;
+    bsSectionIds[s.name] = id;
+    groups.push({ id, name: s.name, parentId: null, reportType: "bs", sortOrder: s.sortOrder, subtotalAfter: false, contributesAs: s.contributesAs, eliminateCommissary: false });
+  }
+  for (const [sectionName, groupName, sortOrder] of BS_GROUPS) {
+    const id = nextId++;
+    bsGroupIds[groupName] = id;
+    groups.push({ id, name: groupName, parentId: bsSectionIds[sectionName], reportType: "bs", sortOrder, subtotalAfter: false, contributesAs: null, eliminateCommissary: false });
+  }
+
+  for (const [groupName, accountName] of PNL_ACCOUNT_MAP) {
+    mappings.push({ accountName, groupId: pnlGroupIds[groupName] ?? null, ignored: false });
+  }
+  for (const [groupName, accountName] of BS_ACCOUNT_MAP) {
+    mappings.push({ accountName, groupId: bsGroupIds[groupName] ?? null, ignored: false });
+  }
+  for (const accountName of IGNORED_PNL_ACCOUNTS) mappings.push({ accountName, groupId: null, ignored: true });
+  for (const accountName of IGNORED_BS_ACCOUNTS) mappings.push({ accountName, groupId: null, ignored: true });
+
+  return { groups, mappings };
+}
+
+// ---------------------------------------------------------------------------
 // SEED RUNNER
 // ---------------------------------------------------------------------------
 
@@ -620,7 +688,11 @@ async function seed() {
   process.exit(0);
 }
 
-seed().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only run the seeder when executed directly, not when imported (e.g. by the
+// offline validation harness, which only needs buildSeedData()).
+if (process.argv[1] && process.argv[1].includes("seed-report-mappings")) {
+  seed().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
